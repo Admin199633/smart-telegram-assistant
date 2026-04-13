@@ -1,0 +1,43 @@
+Bot/
+├── src/                          # קוד מקור (TypeScript)
+│   ├── app.ts                    # אתחול האפליקציה
+│   ├── server.ts                 # שרת HTTP / webhook
+│   ├── config.ts                 # הגדרות סביבה
+│   ├── types.ts                  # טיפוסים משותפים
+│   ├── supported-actions.ts      # רשימת פעולות נתמכות
+│   ├── services/
+│   │   ├── orchestrator.ts       # מתאם מרכזי בין השירותים
+│   │   ├── llm-service.ts        # קריאות ל-Claude (LLM)
+│   │   ├── telegram-service.ts   # ממשק Telegram
+│   │   ├── calendar-service.ts   # Google Calendar
+│   │   ├── reminder-service.ts   # ניהול תזכורות
+│   │   ├── reminder-execution-engine.ts  # הרצת תזכורות
+│   │   ├── list-service.ts       # ניהול רשימות
+│   │   ├── worklog-service.ts    # יומן עבודה (Jira)
+│   │   ├── app-action-service.ts # ביצוע פעולות
+│   │   ├── action-registry.ts    # רישום פעולות
+│   │   ├── database.ts           # שכבת נתונים (SQLite)
+│   │   └── memory-store.ts       # זיכרון שיחה
+│   └── utils/
+│       ├── id.ts                 # יצירת מזהים
+│       ├── logger.ts             # לוגים
+│       ├── normalize.ts          # נרמול טקסט
+│       └── time.ts               # עזרי זמן
+│
+├── dist/                         # קוד מקומפל (JavaScript)
+├── data/                         # נתונים בזמן ריצה
+│   ├── google-tokens.json        # טוקנים של Google
+│   └── lists.json                # נתוני רשימות
+│
+├── docs/
+│   └── PROJECT_SPEC_HE.md        # מפרט פרויקט בעברית
+│
+├── .env                          # משתני סביבה (מפתחות API)
+├── .env.example                  # דוגמת משתני סביבה
+├── Dockerfile                    # הגדרת Docker
+├── package.json                  # תלויות Node.js
+├── tsconfig.json                 # הגדרות TypeScript
+├── Backlog.md                    # משימות עתידיות
+├── MVP.md                        # הגדרת MVP
+├── TASK.md                       # משימה נוכחית
+└── WORKLOG.md                    # יומן שינויים
