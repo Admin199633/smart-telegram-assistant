@@ -1,0 +1,25 @@
+{
+  "name": "smart-telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "node --watch --loader ts-node/esm src/server.ts",
+    "test": "node --loader ts-node/esm --test src/utils/time.test.ts src/utils/normalize.test.ts src/services/reminder-service.test.ts src/services/llm-service.test.ts src/app.test.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "pg": "^8.20.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.10",
+    "@types/pg": "^8.20.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.2"
+  }
+}
