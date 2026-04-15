@@ -62,6 +62,7 @@ export class LlmService {
       const aiResult = await this.tryOpenAiInterpretation({ userId, text, profile });
       if (aiResult) {
         logger.info("routing decided by AI", { userId });
+        aiResult.engine ??= "FEATURE";
         return aiResult;
       }
       logger.info("AI unavailable, falling back to heuristics", { userId });
@@ -88,7 +89,8 @@ export class LlmService {
             intent: AGENT_INTENTS.OUT_OF_SCOPE,
             entities: {},
             draftResponse: outcome.text,
-            proposedAction: undefined
+            proposedAction: undefined,
+            engine: "GEMINI" as const
           };
         }
 
@@ -98,7 +100,8 @@ export class LlmService {
             intent: AGENT_INTENTS.OUT_OF_SCOPE,
             entities: {},
             draftResponse: await fallbackToGroq(originalText),
-            proposedAction: undefined
+            proposedAction: undefined,
+            engine: "GROQ" as const
           };
         }
 
@@ -108,12 +111,14 @@ export class LlmService {
           entities: {},
           draftResponse: PRIMARY_ENGINE_ESCALATION_PROMPT,
           proposedAction: undefined,
-          isRefusalOffer: true
+          isRefusalOffer: true,
+          engine: "FEATURE" as const
         };
       } catch {
         // fall through to heuristic result
       }
     }
+    result.engine ??= "FEATURE";
     return result;
   }
 

@@ -88,6 +88,7 @@ export class OrchestratorService {
         createdAt: now
       });
 
+      resolvedResumed.engine ??= "FEATURE";
       return resolvedResumed;
       } // end else (not a new intent)
     }
@@ -105,14 +106,14 @@ export class OrchestratorService {
           const result = await this.confirm(userId, pendingActionId);
           this.memory.appendConversation(userId, { role: "user", content: text, createdAt: new Date().toISOString() });
           this.memory.appendConversation(userId, { role: "assistant", content: result.message, createdAt: new Date().toISOString() });
-          return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: result.message };
+          return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: result.message, engine: "FEATURE" };
         }
         if (looksLikeTextCancel(text)) {
           this.clearPendingConfirmationState(userId);
           this.memory.clearClarification(userId);
           this.memory.appendConversation(userId, { role: "user", content: text, createdAt: new Date().toISOString() });
           this.memory.appendConversation(userId, { role: "assistant", content: "בוטל.", createdAt: new Date().toISOString() });
-          return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: "בוטל." };
+          return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: "בוטל.", engine: "FEATURE" };
         }
 
         this.clearPendingConfirmationState(userId);
@@ -131,7 +132,7 @@ export class OrchestratorService {
         const now = new Date().toISOString();
         this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
         this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
-        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response };
+        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response, engine: "GROQ" };
       }
       if (looksLikeTextCancel(text)) {
         this.memory.clearPendingEscalation(userId);
@@ -140,7 +141,7 @@ export class OrchestratorService {
         const now = new Date().toISOString();
         this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
         this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
-        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response };
+        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response, engine: "FEATURE" };
       }
       // Neither yes nor no — user moved on; clear the offer and route normally
       this.memory.clearPendingEscalation(userId);

@@ -15,9 +15,13 @@ import { ReminderExecutionEngine } from "./services/reminder-execution-engine.js
 import { ReminderService } from "./services/reminder-service.js";
 import { TelegramService } from "./services/telegram-service.js";
 import { WorklogService } from "./services/worklog-service.js";
-import { AgentInterpretation, TelegramUpdate } from "./types.js";
+import { AgentInterpretation, EngineSource, TelegramUpdate } from "./types.js";
 import { formatDateTime } from "./utils/time.js";
 import { logger } from "./utils/logger.js";
+
+function signMessage(text: string, engine: EngineSource = "FEATURE"): string {
+  return `${text}\n\n[engine: ${engine}]`;
+}
 
 const interpretSchema = z.object({
   userId: z.string(),
@@ -183,7 +187,7 @@ export function createApp() {
       ]);
 
       if (incomingText && MENU_TRIGGERS.has(incomingText.trim()) && chatId) {
-        await telegram.sendMessage(chatId, "מה תרצה לעשות?", {
+        await telegram.sendMessage(chatId, signMessage("מה תרצה לעשות?"), {
           inline_keyboard: [[
             { text: "רשימות", callback_data: "menu:lists" },
             { text: "תזכורות", callback_data: "menu:reminders" }
@@ -202,7 +206,7 @@ export function createApp() {
           hasGoogleCalendarAuth: Boolean(memory.getGoogleTokens(userId)),
           publicBaseUrl: config.publicBaseUrl
         });
-        await telegram.sendMessage(chatId, interpretation.draftResponse, markup, "HTML");
+        await telegram.sendMessage(chatId, signMessage(interpretation.draftResponse, interpretation.engine), markup, "HTML");
       }
 
       const callbackQuery = update.callback_query;
@@ -224,7 +228,7 @@ export function createApp() {
           logger.info("confirm resolved", { userId, actionId, status: result.status });
 
           if (result.status === "not_found") {
-            await telegram.sendMessage(chatId, "לא מצאתי פעולה ממתינה לאישור. אולי פג תוקף הבקשה?");
+            await telegram.sendMessage(chatId, signMessage("לא מצאתי פעולה ממתינה לאישור. אולי פג תוקף הבקשה?"));
           } else {
             const isSkipped = typeof result.result === "object" && result.result !== null &&
               (result.result as Record<string, unknown>).status === "skipped";
@@ -234,11 +238,11 @@ export function createApp() {
               connectUrl.searchParams.set("chatId", String(chatId));
               await telegram.sendMessage(
                 chatId,
-                "כדי ליצור אירועים ביומן יש להתחבר ל-Google Calendar.",
+                signMessage("כדי ליצור אירועים ביומן יש להתחבר ל-Google Calendar."),
                 { inline_keyboard: [[{ text: "התחבר ליומן", url: connectUrl.toString() }]] }
               );
             } else {
-              await telegram.sendMessage(chatId, result.message);
+              await telegram.sendMessage(chatId, signMessage(result.message));
             }
           }
         } catch (confirmError) {
@@ -254,13 +258,13 @@ export function createApp() {
             connectUrl.searchParams.set("chatId", String(chatId));
             await telegram.sendMessage(
               chatId,
-              "אירעה שגיאה בפעולת היומן. ניתן להתחבר מחדש ולנסות שוב.",
+              signMessage("אירעה שגיאה בפעולת היומן. ניתן להתחבר מחדש ולנסות שוב."),
               {
                 inline_keyboard: [[{ text: "התחבר ליומן", url: connectUrl.toString() }]]
               }
             ).catch(() => undefined);
           } else {
-            await telegram.sendMessage(chatId, "אירעה שגיאה בעת ביצוע הפעולה. אנא נסה שוב.").catch(() => undefined);
+            await telegram.sendMessage(chatId, signMessage("אירעה שגיאה בעת ביצוע הפעולה. אנא נסה שוב.")).catch(() => undefined);
           }
         }
       }
@@ -275,13 +279,13 @@ export function createApp() {
           hasGoogleCalendarAuth: Boolean(memory.getGoogleTokens(userId)),
           publicBaseUrl: config.publicBaseUrl
         });
-        await telegram.sendMessage(chatId, interpretation.draftResponse, markup, "HTML");
+        await telegram.sendMessage(chatId, signMessage(interpretation.draftResponse, interpretation.engine), markup, "HTML");
       }
 
       if (callbackData?.startsWith("menu:") && chatId && callbackQuery) {
 
         if (callbackData === "menu:lists") {
-          await telegram.sendMessage(chatId, "בחר פעולה לרשימות:", {
+          await telegram.sendMessage(chatId, signMessage("בחר פעולה לרשימות:"), {
             inline_keyboard: [
               [
                 { text: "הוסף לרשימה", callback_data: "menu:list:add" },
@@ -294,7 +298,7 @@ export function createApp() {
             ]
           });
         } else if (callbackData === "menu:reminders") {
-          await telegram.sendMessage(chatId, "בחר פעולה לתזכורות:", {
+          await telegram.sendMessage(chatId, signMessage("בחר פעולה לתזכורות:"), {
             inline_keyboard: [
               [
                 { text: "תזכורת חדשה", callback_data: "menu:reminder:create" },
@@ -311,9 +315,9 @@ export function createApp() {
         } else if (callbackData === "menu:list:add") {
           const userLists = lists.listLists(userId);
           if (userLists.length === 0) {
-            await telegram.sendMessage(chatId, "איך תרצה לקרוא לרשימה החדשה?");
+            await telegram.sendMessage(chatId, signMessage("איך תרצה לקרוא לרשימה החדשה?"));
           } else {
-            await telegram.sendMessage(chatId, "לאיזו רשימה להוסיף?", {
+            await telegram.sendMessage(chatId, signMessage("לאיזו רשימה להוסיף?"), {
               inline_keyboard: userLists.map((l, i) => [
                 { text: l.name, callback_data: `menu:list:add:${i}` }
               ])
@@ -331,23 +335,23 @@ export function createApp() {
               hasGoogleCalendarAuth: Boolean(memory.getGoogleTokens(userId)),
               publicBaseUrl: config.publicBaseUrl
             });
-            await telegram.sendMessage(chatId, interpretation.draftResponse, markup, "HTML");
+            await telegram.sendMessage(chatId, signMessage(interpretation.draftResponse, interpretation.engine), markup, "HTML");
           }
 
         // ── הצג רשימה ────────────────────────────────────────────────────
         } else if (callbackData === "menu:list:view") {
           const userLists = lists.listLists(userId);
           if (userLists.length === 0) {
-            await telegram.sendMessage(chatId, "אין לך עדיין רשימות שמורות.");
+            await telegram.sendMessage(chatId, signMessage("אין לך עדיין רשימות שמורות."));
           } else if (userLists.length === 1) {
             const list = userLists[0];
             const items = lists.listItems(list.id).filter((i) => i.status === "active");
             const text = items.length === 0
               ? `רשימת ${list.name} ריקה כרגע.`
               : `רשימת ${list.name}:\n${items.map((item, idx) => `${idx + 1}. ${item.text}`).join("\n")}`;
-            await telegram.sendMessage(chatId, text);
+            await telegram.sendMessage(chatId, signMessage(text));
           } else {
-            await telegram.sendMessage(chatId, "איזו רשימה להציג?", {
+            await telegram.sendMessage(chatId, signMessage("איזו רשימה להציג?"), {
               inline_keyboard: userLists.map((l, i) => [
                 { text: l.name, callback_data: `menu:list:view:${i}` }
               ])
@@ -361,16 +365,16 @@ export function createApp() {
             const text = items.length === 0
               ? `רשימת ${list.name} ריקה כרגע.`
               : `רשימת ${list.name}:\n${items.map((item, idx) => `${idx + 1}. ${item.text}`).join("\n")}`;
-            await telegram.sendMessage(chatId, text);
+            await telegram.sendMessage(chatId, signMessage(text));
           }
 
         // ── הסר פריט ─────────────────────────────────────────────────────
         } else if (callbackData === "menu:list:remove") {
           const userLists = lists.listLists(userId);
           if (userLists.length === 0) {
-            await telegram.sendMessage(chatId, "אין לך עדיין רשימות שמורות.");
+            await telegram.sendMessage(chatId, signMessage("אין לך עדיין רשימות שמורות."));
           } else {
-            await telegram.sendMessage(chatId, "מאיזו רשימה להסיר פריט?", {
+            await telegram.sendMessage(chatId, signMessage("מאיזו רשימה להסיר פריט?"), {
               inline_keyboard: userLists.map((l, i) => [
                 { text: l.name, callback_data: `menu:list:remove:${i}` }
               ])
@@ -384,7 +388,7 @@ export function createApp() {
           const list = lists.listLists(userId)[listIdx];
           if (list && !isNaN(itemIdx)) {
             const removed = lists.removeItemByIndex(list.id, itemIdx);
-            await telegram.sendMessage(chatId, removed ? `פריט הוסר מרשימת ${list.name}.` : "לא הצלחתי להסיר את הפריט.");
+            await telegram.sendMessage(chatId, signMessage(removed ? `פריט הוסר מרשימת ${list.name}.` : "לא הצלחתי להסיר את הפריט."));
           }
         } else if (callbackData.startsWith("menu:list:remove:")) {
           const listIdx = parseInt(callbackData.slice("menu:list:remove:".length), 10);
@@ -392,9 +396,9 @@ export function createApp() {
           if (list) {
             const items = lists.listItems(list.id).filter((i) => i.status === "active");
             if (items.length === 0) {
-              await telegram.sendMessage(chatId, `רשימת ${list.name} ריקה כרגע.`);
+              await telegram.sendMessage(chatId, signMessage(`רשימת ${list.name} ריקה כרגע.`));
             } else {
-              await telegram.sendMessage(chatId, `איזה פריט להסיר מרשימת ${list.name}?`, {
+              await telegram.sendMessage(chatId, signMessage(`איזה פריט להסיר מרשימת ${list.name}?`), {
                 inline_keyboard: items.map((item, idx) => [
                   { text: `${idx + 1}. ${item.text}`, callback_data: `menu:list:removeitem:${listIdx}:${idx + 1}` }
                 ])
@@ -410,7 +414,7 @@ export function createApp() {
             .sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
 
           if (pending.length === 0) {
-            await telegram.sendMessage(chatId, "אין לך תזכורות פעילות כרגע.");
+            await telegram.sendMessage(chatId, signMessage("אין לך תזכורות פעילות כרגע."));
           } else {
             const tz = config.defaultTimezone;
             const listText = pending
@@ -418,7 +422,7 @@ export function createApp() {
               .join("\n");
             const triggerText = isDelete ? "מחק תזכורת" : "דחה תזכורת";
             const interpretation = await orchestrator.interpret(userId, triggerText);
-            await telegram.sendMessage(chatId, `התזכורות שלך:\n${listText}\n\n${interpretation.draftResponse}`);
+            await telegram.sendMessage(chatId, signMessage(`התזכורות שלך:\n${listText}\n\n${interpretation.draftResponse}`, interpretation.engine));
           }
 
         } else {
@@ -437,7 +441,7 @@ export function createApp() {
               hasGoogleCalendarAuth: Boolean(memory.getGoogleTokens(userId)),
               publicBaseUrl: config.publicBaseUrl
             });
-            await telegram.sendMessage(chatId, interpretation.draftResponse, markup, "HTML");
+            await telegram.sendMessage(chatId, signMessage(interpretation.draftResponse, interpretation.engine), markup, "HTML");
           }
         }
       }
@@ -489,7 +493,7 @@ export function createApp() {
       if (state.chatId) {
         await telegram.sendMessage(
           state.chatId,
-          "חיבור Google Calendar הושלם. עכשיו אפשר לאשר יצירת פגישות ישירות מהבוט."
+          signMessage("חיבור Google Calendar הושלם. עכשיו אפשר לאשר יצירת פגישות ישירות מהבוט.")
         );
       }
 
@@ -530,7 +534,7 @@ export function createApp() {
         return;
       }
       logger.info("sending due reminder", { reminderId: reminder.id, userId: reminder.userId });
-      await telegram.sendMessage(target, `⏰ תזכורת: ${reminder.text}`);
+      await telegram.sendMessage(target, signMessage(`⏰ תזכורת: ${reminder.text}`));
     }).catch((err: unknown) => {
       logger.error("reminder poll error", { error: err instanceof Error ? err.message : String(err) });
     });

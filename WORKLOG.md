@@ -1,5 +1,36 @@
 # Worklog
 
+## 2026-04-15 - Engine Signature on Every Bot Reply
+
+**What changed:** Every user-facing bot message now ends with `[engine: GEMINI]`, `[engine: GROQ]`, or `[engine: FEATURE]` showing which source produced the reply.
+
+**Engine assignment:**
+- `GEMINI` — Gemini chat success path (`llm-service.ts` → `getGeminiOutcome` → success)
+- `GROQ` — Gemini technical failure auto-fallback, or user-approved GROQ escalation
+- `FEATURE` — all built-in product logic: heuristics, AI structured intent, clarifications, confirmations, list/reminder views, menus, OAuth, reminders delivery, refusal offer message
+
+**Implementation:**
+- Added `EngineSource` type and `engine?` field to `AgentInterpretation` in `types.ts`
+- `llm-service.ts`: set `engine` on Gemini/Groq/Feature paths; defaults to `"FEATURE"` via `??=`
+- `orchestrator.ts`: set `engine` on all early returns (clarification, confirmation, escalation)
+- `app.ts`: added `signMessage(text, engine)` helper; applied to every `telegram.sendMessage` call
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Added `EngineSource` type, `engine?` field on `AgentInterpretation` |
+| `src/services/llm-service.ts` | Set engine on smart-chat paths + default FEATURE |
+| `src/services/orchestrator.ts` | Set engine on clarification/confirmation/escalation returns |
+| `src/app.ts` | Added `signMessage` helper; wrapped all `sendMessage` calls |
+
+**Edge cases handled:**
+- Engine defaults to FEATURE if unset (`??=` guard)
+- Menu/OAuth/reminder delivery messages all tagged FEATURE
+- GROQ escalation approval tagged GROQ; decline tagged FEATURE
+
+---
+
 ## 2026-04-15 - Re-enable Refusal → GROQ Switch Offer
 
 **What changed:** Re-enabled the Gemini refusal → GROQ manual switch offer. When Gemini refuses (detected by existing refusal patterns in `smart-chat.ts`), the bot now returns a user-facing message offering to switch to GROQ instead of ending with a generic refusal.

@@ -140,12 +140,15 @@ export interface ClarificationState {
   createdAt: string;
 }
 
+export type EngineSource = "GEMINI" | "GROQ" | "FEATURE";
+
 export interface AgentInterpretation {
   intent: Intent;
   entities: Record<string, unknown>;
   draftResponse: string;
   proposedAction?: ProposedAction;
   isRefusalOffer?: boolean;
+  engine?: EngineSource;
 }
 
 export interface PendingEscalation {
