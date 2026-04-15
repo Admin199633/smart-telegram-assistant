@@ -5,7 +5,7 @@ import { logger } from "../utils/logger.js";
 const ERROR_RESPONSE = "מצטער, הייתה בעיה זמנית. נסה שוב.";
 const GROQ_FAILURE_RESPONSE = "מצטער, גם המנוע החלופי לא הצליח לעזור. נסה שוב מאוחר יותר.";
 
-export const PRIMARY_ENGINE_ESCALATION_PROMPT = "אני לא יכול לעזור בזה דרך המנוע הראשי. רוצה לנסות מנוע אחר?";
+export const PRIMARY_ENGINE_ESCALATION_PROMPT = "אני לא יכול לעזור עם זה, אבל רוצה שאנסה מנוע אחר?";
 
 export type ModelOutcome =
   | { kind: "success"; text: string }

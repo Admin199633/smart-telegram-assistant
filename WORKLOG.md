@@ -867,6 +867,7 @@ Removed the shopping-list-only restriction. Users can now create, view, and add 
 
 - Implemented: added a user-driven escalation flow so Gemini remains the primary chat engine, Gemini technical failures still fall back to Groq automatically, and Gemini refusals now return an explicit opt-in prompt before any Groq retry.
 - Implemented: stored pending escalation state per user with the original message, source/target models, and a timestamp; the orchestrator now handles approve/decline replies and clears stale escalation state safely.
+- Implemented: normalized the refusal copy to a natural user-facing prompt that offers an optional Groq retry without exposing internal primary-model routing.
 - Implemented: added concise logs for Gemini success, Gemini technical fallback, Gemini refusal escalation offers, escalation approvals/declines, and Groq escalation success/failure.
 - Files changed: `src/services/smart-chat.ts`, `src/services/llm-service.ts`, `src/services/orchestrator.ts`, `src/services/memory-store.ts`, `src/types.ts`, `WORKLOG.md`
 - Next step to implement: add focused automated coverage for the refusal/escalation path so the yes/no escalation flow stays stable as chat routing evolves.
