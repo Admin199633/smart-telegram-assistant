@@ -20,7 +20,7 @@ import { config } from "../config.js";
 import { AGENT_INTENT_VALUES, AGENT_INTENTS, PROPOSED_ACTION_TYPES, type AgentIntent } from "../supported-actions.js";
 import { createId } from "../utils/id.js";
 import { formatDateTime, parseNaturalLanguageDate } from "../utils/time.js";
-import { fallbackToGroq, getGeminiOutcome, PRIMARY_ENGINE_ESCALATION_PROMPT } from "./smart-chat.js";
+import { getGeminiOutcome, PRIMARY_ENGINE_ESCALATION_PROMPT } from "./smart-chat.js";
 import {
   normalizeInput,
   matchesAny,
@@ -95,13 +95,14 @@ export class LlmService {
         }
 
         if (outcome.kind === "technical_failure") {
-          logger.info("llm-service: Gemini technical failure, falling back to Groq", { reason: outcome.reason });
+          logger.info("llm-service: Gemini technical failure, offering GROQ switch", { reason: outcome.reason });
           return {
             intent: AGENT_INTENTS.OUT_OF_SCOPE,
             entities: {},
-            draftResponse: await fallbackToGroq(originalText),
+            draftResponse: PRIMARY_ENGINE_ESCALATION_PROMPT,
             proposedAction: undefined,
-            engine: "GROQ" as const
+            isRefusalOffer: true,
+            engine: "FEATURE" as const
           };
         }
 

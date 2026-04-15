@@ -1,5 +1,26 @@
 # Worklog
 
+## 2026-04-15 - Fix Incorrect GROQ Routing
+
+**Root cause:** When Gemini had a technical failure (API down, missing `GEMINI_API_KEY`, network error), `llm-service.ts` automatically called `fallbackToGroq()` without user consent. Since `GEMINI_API_KEY` is accessed directly via `process.env` (not in the Zod config schema), a missing or invalid key caused Gemini to return `ERROR_RESPONSE` on every call → classified as `technical_failure` → every normal chat message silently routed to GROQ.
+
+**Fix:** Changed the technical failure path to show the same consent-based GROQ offer (via `PRIMARY_ENGINE_ESCALATION_PROMPT` + `isRefusalOffer: true`) instead of auto-calling `fallbackToGroq()`. Removed the unused `fallbackToGroq` import from `llm-service.ts`.
+
+**New routing:**
+- Gemini success → `[engine: GEMINI]`
+- Gemini technical failure → GROQ offer → `[engine: FEATURE]` (was: auto GROQ)
+- Gemini refusal → GROQ offer → `[engine: FEATURE]` (unchanged)
+- User approves offer → GROQ call → `[engine: GROQ]` (unchanged)
+- User declines → `[engine: FEATURE]` (unchanged)
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Replaced `fallbackToGroq()` auto-call with consent-based GROQ offer on technical failure; removed unused `fallbackToGroq` import |
+
+---
+
 ## 2026-04-15 - Engine Signature on Every Bot Reply
 
 **What changed:** Every user-facing bot message now ends with `[engine: GEMINI]`, `[engine: GROQ]`, or `[engine: FEATURE]` showing which source produced the reply.
