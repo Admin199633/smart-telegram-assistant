@@ -1,5 +1,42 @@
 # Worklog
 
+## 2026-04-15 - Extend Gemini Refusal Detection
+
+**What changed:** Added 2 missing refusal patterns to `REFUSAL_PATTERNS` in `smart-chat.ts`:
+- `אני לא רשאי` — added `רשאי` to the `אני לא (...)` pattern (was only in the `איני` pattern)
+- `אין לי אפשרות (?:לעזור|לסייע|לספק)` — new pattern for "I have no ability to help/assist/provide"
+
+**Verified:** 19 test cases — 13 refusals correctly detected, 6 normal messages correctly pass through. No false positives on edge cases like `"אני מצטער על האיחור"` or `"אין בעיה, אשמח לעזור"`.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/smart-chat.ts` | Added `רשאי` to `אני לא` pattern; added `אין לי אפשרות` pattern |
+
+---
+
+## 2026-04-15 - Fix Gemini Refusal Detection
+
+**Root cause:** Gemini returns formal Hebrew refusal phrases (e.g. `"איני יכול לסייע בבקשות מסוג זה."`) that the existing `REFUSAL_PATTERNS` did not match. Patterns only covered colloquial forms (`אני לא יכול`, `לא אוכל לעזור`) but missed formal conjugations (`איני`, `לסייע`, `אין ביכולתי`, `מסוג זה`).
+
+**Fix:** Extended `REFUSAL_PATTERNS` in `smart-chat.ts` with 5 new patterns:
+- `איני (?:יכול|מסוגל|מורשה|רשאי)` — formal "I cannot/am not authorized"
+- `לא (?:אוכל|ניתן) (?:לעזור|לסייע)` — added `לסייע` alongside existing `לעזור`
+- `אין ביכולתי` — formal "it is not in my ability"
+- `(?:לא (?:אוכל|ניתן|יכול) לסייע)` — "cannot assist" standalone
+- Bidirectional `מסוג זה/בקשה זו/בנושא זה` patterns — catches "requests of this type" in either word order
+
+**Verified:** All 10 test cases pass (7 refusals detected, 3 normal messages pass through).
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/smart-chat.ts` | Added 5 Hebrew refusal patterns to `REFUSAL_PATTERNS` array |
+
+---
+
 ## 2026-04-15 - Fix Incorrect GROQ Routing
 
 **Root cause:** When Gemini had a technical failure (API down, missing `GEMINI_API_KEY`, network error), `llm-service.ts` automatically called `fallbackToGroq()` without user consent. Since `GEMINI_API_KEY` is accessed directly via `process.env` (not in the Zod config schema), a missing or invalid key caused Gemini to return `ERROR_RESPONSE` on every call → classified as `technical_failure` → every normal chat message silently routed to GROQ.
