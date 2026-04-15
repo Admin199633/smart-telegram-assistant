@@ -193,6 +193,55 @@ export class OrchestratorService {
       }
     }
 
+    // Deterministic view-list intercept: catch unambiguous view phrases before
+    // the LLM call so AI misclassification cannot route them to ADD or CREATE.
+    const normalizedForView = normalizeInput(text);
+    if (this.listService) {
+      if (matchesAny(normalizedForView, LIST_VIEW_ALL_TRIGGERS)) {
+        logger.info("routing: deterministic VIEW_LISTS", { userId });
+        const lists = this.listService.listLists(userId);
+        const now = new Date().toISOString();
+        let response: string;
+        if (lists.length === 0) {
+          response = "אין לך עדיין רשימות שמורות.";
+          this.memory.clearNumberedListContext(userId);
+        } else {
+          response = `הרשימות שלך:\n${lists.map((l, idx) => `${idx + 1}. ${l.name}`).join("\n")}`;
+          this.memory.saveNumberedListContext(userId, {
+            type: "lists",
+            items: lists.map((l) => l.name),
+            timestamp: now
+          });
+        }
+        this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+        this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+        return { intent: AGENT_INTENTS.VIEW_LISTS, entities: {}, draftResponse: response, engine: "FEATURE" };
+      }
+
+      if (matchesAny(normalizedForView, LIST_VIEW_TRIGGERS)) {
+        logger.info("routing: deterministic VIEW_LIST", { userId });
+        const listName = inferViewListName(normalizedForView);
+        const list = listName
+          ? this.listService.findListByName(userId, listName)
+          : this.listService.listLists(userId)[0];
+        let response: string;
+        if (!list) {
+          response = listName
+            ? `לא מצאתי רשימה בשם "${listName}".`
+            : "אין לך עדיין רשימות שמורות.";
+        } else {
+          const items = this.listService.listItems(list.id).filter((i) => i.status === "active");
+          response = items.length === 0
+            ? `רשימת ${list.name} ריקה כרגע.`
+            : `רשימת ${list.name}:\n${items.map((item, idx) => `${idx + 1}. ${item.text}`).join("\n")}`;
+        }
+        const now = new Date().toISOString();
+        this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+        this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+        return { intent: AGENT_INTENTS.VIEW_LIST, entities: { listName }, draftResponse: response, engine: "FEATURE" };
+      }
+    }
+
     logger.info("routing: ai", { userId });
     const conversation = this.memory.listConversation(userId);
     const interpretation = await this.llm.interpret({
@@ -1051,6 +1100,25 @@ function confirmationMessage(action: ProposedAction, result: unknown): string {
     default:
       return "הטיוטה נשמרה ומוכנה לשימוש.";
   }
+}
+
+/**
+ * Extracts a list name from a view-list phrase for the deterministic intercept.
+ * Handles "תציג לי את רשימת X", "תציג לי את X", "מה יש ברשימת X", etc.
+ * Returns undefined for generic "הרשימה" (falls back to first list).
+ */
+function inferViewListName(text: string): string | undefined {
+  // "רשימת X" — with optional ה prefix on name
+  const constructMatch = text.match(/(?:לרשימת|ברשימת|רשימת)\s+ה?([\u0590-\u05FF]+)/iu);
+  if (constructMatch?.[1]) return constructMatch[1].trim();
+  // "view-verb [לי] את [ה]<name>" — bare name (skip generic "רשימה/רשימות")
+  const viewBareMatch = text.match(/(?:תציג|תציגי|הצג|הציגי|תראה|תראי|הראה|הראי|תפתח|תפתחי|פתח|פתחי)\s+(?:לי\s+)?את\s+ה?([\u0590-\u05FF]+)/iu);
+  if (viewBareMatch?.[1]) {
+    const name = viewBareMatch[1].trim();
+    if (/^רשימ(?:ה|ות)$/.test(name)) return undefined;
+    return name;
+  }
+  return undefined;
 }
 
 /**

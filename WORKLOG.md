@@ -1,5 +1,48 @@
 # Worklog
 
+## 2026-04-16 - Rebuild dist (stale JS was hiding VIEW_LIST fixes)
+
+**Problem:** The previous session's fixes to `LIST_VIEW_TRIGGERS`, heuristic ordering, and the deterministic orchestrator intercept were all correct in the TypeScript source, but the compiled `dist/` JS files were stale (dated April 15). The running bot used the old compiled JS that lacked all the view-list fixes.
+
+**Fix:** Ran `tsc` to rebuild `dist/`. No source code changes — all logic was already correct from the previous entry.
+
+**Verified after rebuild:**
+- `"תציג לי את קניות"` → FEATURE VIEW_LIST (deterministic intercept, bare-name trigger)
+- `"תפתח את משימות"` → FEATURE VIEW_LIST (deterministic intercept)
+- `"איזה רשימות יש לי"` → FEATURE VIEW_LISTS (deterministic intercept)
+- All 52 tests pass
+
+---
+
+## 2026-04-16 - Fix VIEW_LIST / VIEW_LISTS intent classification
+
+**Root causes:**
+
+1. **"תציג לי את קניות" → ADD instead of VIEW_LIST**: `LIST_VIEW_TRIGGERS` required `רשימת` before the list name, so `"תציג לי את קניות"` (bare name, no `רשימת`) didn't match VIEW. Meanwhile, `LIST_ADD_TRIGGERS` has a bare `קניות` alternative that caught it as ADD.
+
+2. **"איזה רשימות יש לי" → CREATE_LIST**: Only happens via AI path. When `openAiApiKey` is set, the AI classifies first and heuristics never run. AI sometimes misclassifies view-all as create.
+
+**Fixes (3 layers):**
+
+| Layer | File | Change |
+|-------|------|--------|
+| Trigger patterns | `src/utils/normalize.ts` | Added `LIST_VIEW_TRIGGERS` pattern for view-verb + `את` + bare name (no `רשימת` required) |
+| Heuristic priority | `src/services/llm-service.ts` | Moved `VIEW_LISTS` and `VIEW_LIST` checks **before** `CREATE_LIST` in heuristic chain |
+| Name inference | `src/services/llm-service.ts` | Added view-verb bare-name extraction to `inferListName()`, skipping generic `רשימה/רשימות` |
+| Deterministic intercept | `src/services/orchestrator.ts` | Added pre-LLM check: if input matches `LIST_VIEW_ALL_TRIGGERS` or `LIST_VIEW_TRIGGERS`, handle as FEATURE directly — bypasses AI misclassification entirely |
+| Name extraction | `src/services/orchestrator.ts` | Added `inferViewListName()` helper for the deterministic intercept, with same generic-word guard |
+
+**Routing priority in orchestrator `interpret()`:**
+1. Clarification → 2. Confirmation → 3. GROQ → 4. Numbered list ref → 5. **Deterministic VIEW_LISTS/VIEW_LIST** (new) → 6. LLM call
+
+**Edge cases handled:**
+- `"תציג לי את הרשימה"` (generic "the list") → `inferViewListName` returns undefined → falls back to first list
+- `"תציג לי את רשימת קניות"` → construct match extracts `קניות` correctly
+- `"תפתח את השנייה"` → caught earlier by numbered reference resolution (step 4)
+- `"תיצור רשימת קניות"` → not matched by VIEW triggers → correctly routes to CREATE_LIST
+
+---
+
 ## 2026-04-16 - Handle list references without valid context
 
 **Problem:** `"תציג לי את 1"` without context fell through to Gemini, producing wrong responses like "I don't have access..."

@@ -324,6 +324,25 @@ export class LlmService {
       };
     }
 
+    if (looksLikeViewListsRequest(normalized)) {
+      return {
+        intent: AGENT_INTENTS.VIEW_LISTS,
+        entities: {},
+        draftResponse: "אין לי עדיין רשימות שמורות.",
+        proposedAction: undefined
+      };
+    }
+
+    if (looksLikeViewListRequest(normalized)) {
+      const listName = inferListName(normalized);
+      return {
+        intent: AGENT_INTENTS.VIEW_LIST,
+        entities: { listName },
+        draftResponse: "הרשימה שלך ריקה כרגע.",
+        proposedAction: undefined
+      };
+    }
+
     if (looksLikeCreateListRequest(normalized)) {
       const listName = inferNewListName(normalized);
       if (listName) {
@@ -380,25 +399,6 @@ export class LlmService {
           proposedAction: action
         };
       }
-    }
-
-    if (looksLikeViewListsRequest(normalized)) {
-      return {
-        intent: AGENT_INTENTS.VIEW_LISTS,
-        entities: {},
-        draftResponse: "אין לי עדיין רשימות שמורות.",
-        proposedAction: undefined
-      };
-    }
-
-    if (looksLikeViewListRequest(normalized)) {
-      const listName = inferListName(normalized);
-      return {
-        intent: AGENT_INTENTS.VIEW_LIST,
-        entities: { listName },
-        draftResponse: "הרשימה שלך ריקה כרגע.",
-        proposedAction: undefined
-      };
     }
 
     if (looksLikeDeleteListRequest(normalized)) {
@@ -1099,6 +1099,12 @@ function inferListName(text: string): string | undefined {
   // "לרשימת X" / "ברשימת X" / "רשימת X" — strip optional ה prefix from name
   const constructMatch = text.match(/(?:לרשימת|ברשימת|רשימת)\s+ה?([\u0590-\u05FF]+)/iu);
   if (constructMatch?.[1]) return constructMatch[1].trim();
+  // "תציג/תראה/הצג/תפתח [לי] את [ה]<name>" — view verb + bare list name (skip generic "רשימה/רשימות")
+  const viewBareMatch = text.match(/(?:תציג|תציגי|הצג|הציגי|תראה|תראי|הראה|הראי|תפתח|תפתחי|פתח|פתחי)\s+(?:לי\s+)?את\s+ה?([\u0590-\u05FF]+)/iu);
+  if (viewBareMatch?.[1]) {
+    const name = viewBareMatch[1].trim();
+    if (!/^רשימ(?:ה|ות)$/.test(name)) return name;
+  }
   // "ל<name>" immediately after a list-action verb: "תוסיף לקניות", "שים לסופר"
   const verbPrepMatch = text.match(/(?:תוסיף|תוסיפי|שים|תשים|תכניס|הוסף)\s+ל([\u0590-\u05FF]{2,})(?:\s|$)/iu);
   if (verbPrepMatch?.[1]) return verbPrepMatch[1].trim();

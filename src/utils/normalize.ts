@@ -116,6 +116,8 @@ export const LIST_ADD_TRIGGERS: ReadonlyArray<RegExp> = [
 export const LIST_VIEW_TRIGGERS: ReadonlyArray<RegExp> = [
   // "תציג לי את רשימת סופר" / "מה רשימת הקניות" — any named list
   /(?:מה|תציג|הצג|תראה|ראה|הראה)\s+(?:לי\s+)?(?:את\s+)?(?:ה?רשימת\s+ה?[\u0590-\u05FF]+|הרשימה)/i,
+  // "תציג לי את קניות" — view verb + את + bare list name (no רשימת prefix)
+  /(?:תציג|תציגי|הצג|הציגי|תראה|תראי|הראה|הראי|תפתח|תפתחי|פתח|פתחי)\s+(?:לי\s+)?את\s+ה?[\u0590-\u05FF]+/i,
   // "רשימת X שלי"
   /רשימת\s+ה?[\u0590-\u05FF]+\s+שלי/i,
   // "מה יש ברשימת X"
