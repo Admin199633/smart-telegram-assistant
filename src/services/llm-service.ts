@@ -507,7 +507,18 @@ export class LlmService {
         "- message MUST always be filled (in Hebrew)",
         '- action only exists if type = "action"',
         "- NEVER include anything outside JSON",
-        `- Timezone: ${profile.schedulingPreferences.timezone}`
+        `- Timezone: ${profile.schedulingPreferences.timezone}`,
+        "",
+        "Smart defaults:",
+        "If the user requests an action but misses details (like time or date):",
+        "- DO NOT ask a question. INSTEAD, suggest a reasonable default.",
+        "- Always include the suggested datetime in the action payload.",
+        '- Example: user says "תזכיר לי להתקשר לדן" → suggest "מחר בבוקר" and include datetime: "מחר בבוקר" in payload.',
+        '- Example: user says "תקבע פגישה עם דן" → suggest "מחר ב-10:00" and include datetime: "מחר ב-10:00" in payload.',
+        "- Prefer near-future defaults: today or tomorrow.",
+        "- Morning = 09:00, evening = 18:00.",
+        "- Keep suggestions simple, short, and realistic.",
+        "- Do NOT hallucinate complex details."
       ].join("\n");
 
       const response = await fetch("https://api.openai.com/v1/responses", {
@@ -559,7 +570,7 @@ export class LlmService {
         return null;
       }
 
-      const parsed = parseStructuredResponse(data.output_text);
+      const parsed = parseStructuredResponse(data.output_text, profile.schedulingPreferences.timezone);
       if (!parsed) {
         return null;
       }
@@ -710,7 +721,7 @@ interface StructuredLlmResponse {
   } | null;
 }
 
-function parseStructuredResponse(raw: string): AgentInterpretation | null {
+function parseStructuredResponse(raw: string, timezone: string): AgentInterpretation | null {
   let parsed: StructuredLlmResponse;
   try {
     parsed = JSON.parse(raw);
@@ -747,7 +758,7 @@ function parseStructuredResponse(raw: string): AgentInterpretation | null {
     };
   }
 
-  const mapped = mapAiActionToProposedAction(actionInfo);
+  const mapped = mapAiActionToProposedAction(actionInfo, timezone);
   if (!mapped) {
     logger.info("AI action mapping failed, downgrading to chat", { actionType: actionInfo.type });
     return {
@@ -767,22 +778,49 @@ function parseStructuredResponse(raw: string): AgentInterpretation | null {
   };
 }
 
+function normalizeAiDatetime(raw: string, timezone: string): { iso: string | undefined; original: string } {
+  if (!raw) {
+    return { iso: undefined, original: raw };
+  }
+
+  // If already ISO format, use as-is
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+      logger.info("datetime normalization: already ISO", { original: raw });
+      return { iso: d.toISOString(), original: raw };
+    }
+  }
+
+  // Parse natural language (Hebrew/English) through existing parser
+  const parsed = parseNaturalLanguageDate(raw, timezone);
+  if (parsed.startAt) {
+    logger.info("datetime normalization: parsed successfully", { original: raw, parsed: parsed.startAt });
+    return { iso: parsed.startAt, original: raw };
+  }
+
+  logger.info("datetime normalization: parsing failed", { original: raw });
+  return { iso: undefined, original: raw };
+}
+
 function mapAiActionToProposedAction(
-  aiAction: { type: string; payload: Record<string, unknown> }
+  aiAction: { type: string; payload: Record<string, unknown> },
+  timezone: string
 ): { intent: AgentIntent; entities: Record<string, unknown>; proposedAction: ProposedAction } | null {
   const payload = aiAction.payload ?? {};
 
   switch (aiAction.type) {
     case "reminder": {
       const text = typeof payload.text === "string" ? payload.text : "";
-      const datetime = typeof payload.datetime === "string" ? payload.datetime : "";
+      const rawDatetime = typeof payload.datetime === "string" ? payload.datetime : "";
       if (!text) return null;
-      const reminderPayload: ReminderRequest = { text, datetime: datetime || undefined };
+      const resolved = normalizeAiDatetime(rawDatetime, timezone);
+      const reminderPayload: ReminderRequest = { text, datetime: resolved.iso || undefined, inferredTimeText: rawDatetime || undefined };
       const missingFields: string[] = [];
-      if (!datetime) missingFields.push("startAt");
+      if (!resolved.iso) missingFields.push("startAt");
       return {
         intent: missingFields.length > 0 ? AGENT_INTENTS.CLARIFY : AGENT_INTENTS.CREATE_REMINDER,
-        entities: { text, datetime },
+        entities: { text, datetime: resolved.iso ?? rawDatetime },
         proposedAction: {
           id: createId("reminder"),
           type: PROPOSED_ACTION_TYPES.CREATE_REMINDER,
@@ -821,16 +859,17 @@ function mapAiActionToProposedAction(
 
     case "calendar": {
       const title = typeof payload.title === "string" ? payload.title : "";
-      const datetime = typeof payload.datetime === "string" ? payload.datetime : "";
+      const rawDatetime = typeof payload.datetime === "string" ? payload.datetime : "";
       if (!title) return null;
+      const resolved = normalizeAiDatetime(rawDatetime, timezone);
       const calendarPayload: CalendarRequest = {
         title,
         participants: [],
-        startAt: datetime || undefined,
-        confidence: datetime ? 0.8 : 0
+        startAt: resolved.iso || undefined,
+        confidence: resolved.iso ? 0.9 : 0
       };
       const missingFields: string[] = [];
-      if (!datetime) missingFields.push("startAt");
+      if (!resolved.iso) missingFields.push("startAt");
       return {
         intent: missingFields.length > 0 ? AGENT_INTENTS.CLARIFY : AGENT_INTENTS.SCHEDULE_MEETING,
         entities: { title },

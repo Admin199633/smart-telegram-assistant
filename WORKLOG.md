@@ -1,5 +1,87 @@
 # Worklog
 
+## 2026-04-15 - Smart Default Suggestions (Reduce Clarifications)
+
+**What changed:** Updated the AI system prompt to suggest reasonable defaults when users omit details (e.g. time/date) instead of leaving the payload empty and relying on clarification.
+
+**Before:** User says "תזכיר לי להתקשר לדן" → AI returns no datetime → system asks "מתי?"
+**After:** User says "תזכיר לי להתקשר לדן" → AI suggests "מחר בבוקר" with datetime in payload → confirmation button appears immediately
+
+**Prompt additions:**
+- Prefer near-future defaults (today/tomorrow)
+- Morning = 09:00, evening = 18:00
+- Always include suggested datetime in the action payload
+- Keep suggestions short and realistic
+
+**Safety:** Clarification flow is fully preserved. If AI still omits datetime (or normalization fails), the existing clarification path handles it. No code logic changes — only the AI prompt was modified.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Added "Smart defaults" section to the system prompt in `tryOpenAiInterpretation` |
+
+---
+
+## 2026-04-15 - Normalize Natural Language Dates (Hebrew → ISO)
+
+**What changed:** Added a `normalizeAiDatetime()` layer in the AI action mapping. When the AI returns a natural language datetime string (e.g. "מחר", "עוד שבוע", "מחר ב-8"), it is now parsed into a real ISO datetime using the existing `parseNaturalLanguageDate` parser.
+
+**How it works:**
+1. If datetime is already ISO format → use as-is
+2. If natural language → parse through `parseNaturalLanguageDate(raw, timezone)`
+3. If parsing succeeds → replace with ISO string in payload
+4. If parsing fails → remove datetime, let clarification flow ask the user
+
+**Applied to:** `reminder` and `calendar` action types in `mapAiActionToProposedAction()`. List actions don't have datetimes.
+
+**Logging:** Each normalization logs original value, parsed result, or failure reason.
+
+**No changes to:** `parseNaturalLanguageDate`, `ReminderService`, confirmation logic, or heuristic flows.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Added `normalizeAiDatetime()`; threaded timezone through `parseStructuredResponse` → `mapAiActionToProposedAction`; updated reminder/calendar mapping to use parsed ISO datetimes |
+
+---
+
+## 2026-04-15 - Protect Existing Flows (Guard Before AI)
+
+**What changed:** Added explicit routing log lines to the orchestrator's `interpret()` method to make the priority order visible and verifiable. The guards themselves already existed — this task confirmed and documented them.
+
+**Existing priority order (already in place, now logged):**
+1. `routing: clarification` — active clarification → `resumeClarification()` → returns, AI NOT called
+2. `routing: confirmation` — pending action + "כן"/"לא" → confirm/cancel → returns, AI NOT called
+3. `routing: ai` — no active flow → `llm.interpret()` (AI-first, heuristic fallback)
+
+**No logic changes:** The guards were already correctly implemented. AI cannot override clarification or confirmation flows. Only logging was added.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/orchestrator.ts` | Added `logger.info("routing: clarification/confirmation/ai")` at each decision point |
+
+---
+
+## 2026-04-15 - Store Conversation (Minimal Memory)
+
+**What changed:** Reduced conversation history limit from 20 to 5 messages per user in `MemoryStore.appendConversation()`. This keeps a short, focused conversation window.
+
+**Storage is already wired:** The orchestrator already calls `appendConversation` for both user and assistant messages in all code paths (clarification resume, text confirm/cancel, and main interpretation). No new storage calls were needed.
+
+**Rules:** Max 5 messages per user, oldest removed when exceeding. No system messages stored. Empty responses are not stored (orchestrator always has a `draftResponse`).
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/memory-store.ts` | Changed `appendConversation` slice limit from 20 to 5 |
+
+---
+
 ## 2026-04-15 - Map AI Action → ProposedAction
 
 **What changed:** AI structured actions are now mapped to real `ProposedAction` objects, connecting the AI response to the existing confirmation flow end-to-end.

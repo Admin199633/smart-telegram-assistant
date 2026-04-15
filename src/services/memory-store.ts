@@ -51,7 +51,7 @@ export class MemoryStore {
   appendConversation(userId: string, turn: ConversationTurn): void {
     const turns = this.listConversation(userId);
     turns.push(turn);
-    this.conversations.set(userId, turns.slice(-20));
+    this.conversations.set(userId, turns.slice(-5));
   }
 
   savePendingAction(action: ProposedAction): void {

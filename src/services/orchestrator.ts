@@ -67,7 +67,7 @@ export class OrchestratorService {
         logger.info("list continuation escaped — input not a valid list item", { userId });
         // fall through to normal routing below
       } else {
-      logger.info("resuming clarification", { userId, actionType: clarification.action.type, missingFields: clarification.missingFields });
+      logger.info("routing: clarification", { userId, actionType: clarification.action.type, missingFields: clarification.missingFields });
       const resumed = this.resumeClarification(clarification, text, profile.schedulingPreferences.timezone);
       const resolvedResumed = this.resolveListForInterpretation(userId, resumed);
 
@@ -110,6 +110,7 @@ export class OrchestratorService {
     if (pendingActionId) {
       const pendingAction = this.memory.getPendingAction(pendingActionId);
       if (pendingAction) {
+        logger.info("routing: confirmation", { userId, actionId: pendingActionId });
         if (looksLikeTextConfirm(text)) {
           const result = await this.confirm(userId, pendingActionId);
           this.memory.appendConversation(userId, { role: "user", content: text, createdAt: new Date().toISOString() });
@@ -127,6 +128,7 @@ export class OrchestratorService {
       }
     }
 
+    logger.info("routing: ai", { userId });
     const conversation = this.memory.listConversation(userId);
     const interpretation = await this.llm.interpret({
       userId,
