@@ -1,5 +1,26 @@
 # Worklog
 
+## 2026-04-15 - List Safe Mode (Do Not Corrupt Lists)
+
+**What changed:** Replaced the create/view/open list mappings from Task 8.3 with safe null returns. Only `add_to_list` (with real items) now maps to `ADD_TO_LIST`. All other list intents (`create_list`, `view_list`, `open_list`) return `null` → chat fallback with the AI's message.
+
+**Safe gating logic:**
+- `payload.intent === "add_to_list"` or no intent + items present → `ADD_TO_LIST`
+- `payload.intent === "create_list"` / `"view_list"` / `"open_list"` → `null` → chat
+- No items → `null` → chat
+
+**Item cleanup:** Added `cleanListItemText()` that strips trailing "ברשימה"/"לרשימה" suffixes from items (e.g. "מים ברשימה" → "מים").
+
+**Why downgrade instead of supporting all intents:** The structured AI path doesn't yet have full create/view/open execution wired through the orchestrator. Safe chat fallback prevents corrupted list data while the heuristic path still handles these intents correctly.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Replaced create/view/open mappings with `return null`; added `cleanListItemText()`; added safe gating guard + logging |
+
+---
+
 ## 2026-04-15 - Split List Intents (Create / View / Open / Add)
 
 **What changed:** AI now distinguishes between four list intents instead of treating all list requests as "add item".
@@ -841,3 +862,11 @@ Removed the shopping-list-only restriction. Users can now create, view, and add 
 - Implemented: added optional `parseMode` parameter (`"HTML" | "MarkdownV2"`) to `TelegramService.sendMessage`, and wired `"HTML"` as the parse mode for all agent-reply messages sent via the webhook handler.
 - Files changed: `src/services/telegram-service.ts`, `src/app.ts`, `WORKLOG.md`
 - Next step to implement: escape HTML special characters in `draftResponse` before sending, so user-provided text doesn't break HTML formatting.
+
+## 2026-04-15 - User-Driven Model Escalation
+
+- Implemented: added a user-driven escalation flow so Gemini remains the primary chat engine, Gemini technical failures still fall back to Groq automatically, and Gemini refusals now return an explicit opt-in prompt before any Groq retry.
+- Implemented: stored pending escalation state per user with the original message, source/target models, and a timestamp; the orchestrator now handles approve/decline replies and clears stale escalation state safely.
+- Implemented: added concise logs for Gemini success, Gemini technical fallback, Gemini refusal escalation offers, escalation approvals/declines, and Groq escalation success/failure.
+- Files changed: `src/services/smart-chat.ts`, `src/services/llm-service.ts`, `src/services/orchestrator.ts`, `src/services/memory-store.ts`, `src/types.ts`, `WORKLOG.md`
+- Next step to implement: add focused automated coverage for the refusal/escalation path so the yes/no escalation flow stays stable as chat routing evolves.

@@ -147,6 +147,13 @@ export interface AgentInterpretation {
   proposedAction?: ProposedAction;
 }
 
+export interface PendingEscalation {
+  originalMessage: string;
+  sourceModel: string;
+  targetModel: string;
+  createdAt: string;
+}
+
 export interface ConfirmationResult {
   status: "completed" | "rejected" | "not_found";
   message: string;

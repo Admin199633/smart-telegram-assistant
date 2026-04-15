@@ -20,7 +20,7 @@ import { config } from "../config.js";
 import { AGENT_INTENT_VALUES, AGENT_INTENTS, PROPOSED_ACTION_TYPES, type AgentIntent } from "../supported-actions.js";
 import { createId } from "../utils/id.js";
 import { formatDateTime, parseNaturalLanguageDate } from "../utils/time.js";
-import { createSmartChatCompletion } from "./smart-chat.js";
+import { fallbackToGroq, getGeminiOutcome, PRIMARY_ENGINE_ESCALATION_PROMPT } from "./smart-chat.js";
 import {
   normalizeInput,
   matchesAny,
@@ -78,15 +78,39 @@ export class LlmService {
     const result = this.heuristicInterpretation(normalized, profile);
     if (result.intent === AGENT_INTENTS.OUT_OF_SCOPE) {
       try {
-        const reply = await createSmartChatCompletion(originalText);
-        if (reply) {
+        const outcome = await getGeminiOutcome(originalText);
+
+        if (outcome.kind === "success") {
+          logger.info("llm-service: Gemini success", { route: "chat" });
           return {
             intent: AGENT_INTENTS.OUT_OF_SCOPE,
             entities: {},
-            draftResponse: reply,
+            draftResponse: outcome.text,
             proposedAction: undefined
           };
         }
+
+        if (outcome.kind === "technical_failure") {
+          logger.info("llm-service: Gemini technical failure, falling back to Groq", { reason: outcome.reason });
+          return {
+            intent: AGENT_INTENTS.OUT_OF_SCOPE,
+            entities: {},
+            draftResponse: await fallbackToGroq(originalText),
+            proposedAction: undefined
+          };
+        }
+
+        logger.info("llm-service: Gemini refusal, escalation offer prepared", { reason: outcome.reason });
+        return {
+          intent: AGENT_INTENTS.OUT_OF_SCOPE,
+          entities: {
+            escalationAvailable: true,
+            sourceModel: "Gemini",
+            targetModel: "Groq"
+          },
+          draftResponse: PRIMARY_ENGINE_ESCALATION_PROMPT,
+          proposedAction: undefined
+        };
       } catch {
         // fall through to heuristic result
       }
@@ -827,6 +851,10 @@ function parseStructuredResponse(raw: string, timezone: string): AgentInterpreta
   };
 }
 
+function cleanListItemText(item: string): string {
+  return item.trim().replace(/\s*(?:ברשימה|לרשימה)$/u, "").trim();
+}
+
 function normalizeAiDatetime(raw: string, timezone: string): { iso: string | undefined; original: string } {
   if (!raw) {
     return { iso: undefined, original: raw };
@@ -882,49 +910,27 @@ function mapAiActionToProposedAction(
     }
 
     case "list": {
-      const listIntent = typeof payload.intent === "string" ? payload.intent : "add_to_list";
-      const listName = typeof payload.listName === "string" ? payload.listName : undefined;
+      const listIntent = typeof payload.intent === "string" ? payload.intent : "";
 
-      if (listIntent === "create_list") {
-        if (!listName) return null;
-        const createPayload: CreateListRequest = { listName };
-        return {
-          intent: AGENT_INTENTS.CREATE_LIST,
-          entities: { listName },
-          proposedAction: {
-            id: createId("list_create"),
-            type: PROPOSED_ACTION_TYPES.CREATE_LIST,
-            summary: `יצירת רשימת ${listName}`,
-            requiresConfirmation: true,
-            payload: createPayload,
-            missingFields: []
-          }
-        };
+      // Safe gating: only add_to_list maps to an action.
+      // create_list / view_list / open_list → return null → chat fallback.
+      if (listIntent !== "add_to_list" && listIntent !== "") {
+        logger.info("list intent not add_to_list, downgrading to chat", { listIntent });
+        return null;
       }
 
-      if (listIntent === "view_list") {
-        return {
-          intent: listName ? AGENT_INTENTS.VIEW_LIST : AGENT_INTENTS.VIEW_LISTS,
-          entities: { listName }
-        };
-      }
-
-      if (listIntent === "open_list") {
-        // open_list is not a supported execution flow — treat as view
-        return {
-          intent: listName ? AGENT_INTENTS.VIEW_LIST : AGENT_INTENTS.VIEW_LISTS,
-          entities: { listName }
-        };
-      }
-
-      // add_to_list
       const rawItem = payload.item ?? payload.items;
-      const items: string[] = Array.isArray(rawItem)
-        ? rawItem.filter((i): i is string => typeof i === "string" && i.length > 0)
-        : typeof rawItem === "string" && rawItem.length > 0
-          ? [rawItem]
-          : [];
+      const items: string[] = (
+        Array.isArray(rawItem)
+          ? rawItem.filter((i): i is string => typeof i === "string" && i.length > 0)
+          : typeof rawItem === "string" && rawItem.length > 0
+            ? [rawItem]
+            : []
+      ).map(cleanListItemText).filter((i) => i.length > 0);
+
       if (items.length === 0) return null;
+
+      const listName = typeof payload.listName === "string" ? payload.listName : undefined;
       const listPayload: ListRequest = { items, listName };
       const listDisplayName = listName ?? "קניות";
       return {

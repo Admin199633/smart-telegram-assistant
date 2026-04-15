@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AuditEntry, ClarificationState, ConversationTurn, GoogleTokens, OAuthState, ProposedAction, UserProfile } from "../types.js";
+import { AuditEntry, ClarificationState, ConversationTurn, GoogleTokens, OAuthState, PendingEscalation, ProposedAction, UserProfile } from "../types.js";
 
 export class MemoryStore {
   private readonly profiles = new Map<string, UserProfile>();
@@ -10,6 +10,7 @@ export class MemoryStore {
   private readonly clarifications = new Map<string, ClarificationState>();
   private readonly googleTokens = new Map<string, GoogleTokens>();
   private readonly oauthStates = new Map<string, OAuthState>();
+  private readonly pendingEscalations = new Map<string, PendingEscalation>();
   private readonly auditLog: AuditEntry[] = [];
   private readonly tokensFilePath = path.join(process.cwd(), "data", "google-tokens.json");
 
@@ -112,6 +113,25 @@ export class MemoryStore {
     const state = this.oauthStates.get(stateId);
     this.oauthStates.delete(stateId);
     return state;
+  }
+
+  savePendingEscalation(userId: string, escalation: PendingEscalation): void {
+    this.pendingEscalations.set(userId, escalation);
+  }
+
+  getPendingEscalation(userId: string): PendingEscalation | undefined {
+    const esc = this.pendingEscalations.get(userId);
+    if (!esc) return undefined;
+    // Expire after 5 minutes
+    if (Date.now() - new Date(esc.createdAt).getTime() > 5 * 60 * 1000) {
+      this.pendingEscalations.delete(userId);
+      return undefined;
+    }
+    return esc;
+  }
+
+  clearPendingEscalation(userId: string): void {
+    this.pendingEscalations.delete(userId);
   }
 
   addAuditEntry(entry: AuditEntry): void {
