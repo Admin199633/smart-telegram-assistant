@@ -1,5 +1,91 @@
 # Worklog
 
+## 2026-04-15 - Map AI Action → ProposedAction
+
+**What changed:** AI structured actions are now mapped to real `ProposedAction` objects, connecting the AI response to the existing confirmation flow end-to-end.
+
+**Added:**
+- `mapAiActionToProposedAction()` — maps AI action types to system types:
+  - `reminder` → `CREATE_REMINDER` with `ReminderRequest` payload (requires `text`; `datetime` optional → triggers clarification)
+  - `list` → `ADD_TO_LIST` with `ListRequest` payload (requires at least one item)
+  - `calendar` → `SCHEDULE_MEETING` with `CalendarRequest` payload (requires `title`; `datetime` optional → triggers clarification)
+- Updated `parseStructuredResponse()` to call the mapper for `type: "action"` responses
+- Payload validation: missing required fields → downgrade to chat (no crash)
+- Unknown action types → downgrade to chat
+- Logging for mapping success/failure
+
+**Connected flow:** AI → structured action → ProposedAction → confirm button → service execution. System is now fully connected.
+
+**No changes to:** orchestrator, confirm flow, services, heuristics.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Added `mapAiActionToProposedAction()`, updated `parseStructuredResponse()` action branch, imported `AgentIntent` type |
+
+---
+
+## 2026-04-15 - AI-First Routing
+
+**What changed:** Reversed the routing priority in `LlmService.interpret()`. AI (structured JSON via OpenAI) is now the **primary** decision maker for all messages. Heuristics are fallback only.
+
+**New flow:**
+1. Try structured AI first (for ALL messages, including compose)
+2. If AI returns valid result → return immediately, skip heuristics
+3. If AI fails (null) → fall back to compose-specific path and general heuristics
+
+**Logging:** Added `logger.info` calls to track whether each message was routed by AI or fell back to heuristics.
+
+**What was removed:** The compose-specific OpenAI call (`tryOpenAiComposeInterpretation`) is no longer tried before the general AI call — the structured AI handles all message types. The compose heuristic fallback path is preserved.
+
+**Safety:** Heuristics are NOT deleted. If AI is unavailable (no API key, network failure, bad JSON), the system behaves exactly as before. No changes to orchestrator, confirmation flow, or services.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Reordered `interpret()` to call AI first; added logger import; removed compose-specific OpenAI pre-check |
+
+---
+
+## 2026-04-15 - Structured AI Output (JSON Only)
+
+**What changed:** Replaced the free-form OpenAI system prompt in `tryOpenAiInterpretation` with a strict JSON-only prompt. The LLM now returns `{ type: "chat" | "action", message, action? }` instead of the previous loose `AgentInterpretation` format.
+
+**Added:**
+- Structured JSON system prompt enforcing `type`/`message`/`action` schema
+- Updated OpenAI JSON schema to match the new format
+- `parseStructuredResponse()` helper that safely parses and validates the JSON, mapping it back to `AgentInterpretation`
+- For `type: "chat"` → returns message only (no action)
+- For `type: "action"` → returns message + `suggestedAction` in entities (no execution)
+
+**Fallback mechanism:** If JSON parsing fails, required fields are missing, or the LLM returns unexpected values, the method returns `null` which triggers the existing `heuristicWithSmartFallback` path. No existing flows are broken.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Rewrote `tryOpenAiInterpretation` prompt + schema; added `StructuredLlmResponse` interface and `parseStructuredResponse()` helper |
+
+---
+
+## 2026-04-15 - Fix List Continuation Hijack
+
+**What was broken:** During active list continuation (ADD_TO_LIST clarification with items phase), every message was blindly treated as a list item. Questions like "מה זה ים?" would be added to the shopping list instead of being routed to normal interpretation.
+
+**What was changed:** Added an `isValidListItem()` guard in `orchestrator.ts`. Before entering `resumeClarification` for the ADD_TO_LIST items phase, the guard checks whether the message looks like a genuine list item. If not (contains `?`, Hebrew question words, or is over 80 chars), the clarification state is cleared and the message falls through to the normal LLM/heuristic interpretation flow.
+
+**Why this works:** The guard is narrowly scoped — it only activates during the items collection phase of ADD_TO_LIST (not during `listId` or `createList` clarification). Normal list items like "חלב", "לחם", "ביצים" pass validation. Questions and long conversational messages are correctly escaped back to normal routing.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/orchestrator.ts` | Added `isValidListItem()` helper + guard in `interpret()` before `resumeClarification` for ADD_TO_LIST items phase |
+
+---
+
 ## 2026-04-14 - Fix BUTTON_DATA_INVALID
 
 **Root cause:** `tryOpenAiInterpretation` in `llm-service.ts` (line 549) guarded ID assignment with `!parsed.proposedAction.id`. The OpenAI response schema uses `additionalProperties: true`, so the LLM can include an `id` field with arbitrary content — Hebrew text, long strings, or anything else. That value flowed directly into `confirm:${proposedAction.id}` in `buildTelegramMarkup`, which Telegram rejects with `BUTTON_DATA_INVALID` whenever the id is non-ASCII or the combined string exceeds 64 bytes.

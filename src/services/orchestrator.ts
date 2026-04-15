@@ -57,6 +57,15 @@ export class OrchestratorService {
         this.memory.clearClarification(userId);
         logger.info("clarification interrupted by new intent", { userId, actionType: clarification.action.type });
         // fall through to normal routing below
+      } else if (
+        clarification.action.type === PROPOSED_ACTION_TYPES.ADD_TO_LIST &&
+        !clarification.missingFields.includes("listId") &&
+        !clarification.missingFields.includes("createList") &&
+        !isValidListItem(text)
+      ) {
+        this.memory.clearClarification(userId);
+        logger.info("list continuation escaped — input not a valid list item", { userId });
+        // fall through to normal routing below
       } else {
       logger.info("resuming clarification", { userId, actionType: clarification.action.type, missingFields: clarification.missingFields });
       const resumed = this.resumeClarification(clarification, text, profile.schedulingPreferences.timezone);
@@ -797,6 +806,15 @@ function looksLikeTextConfirm(text: string): boolean {
 
 function looksLikeTextCancel(text: string): boolean {
   return /^(?:לא|no|בטל|ביטול|cancel|עזוב|לא משנה|never mind)(?:\s|$)/i.test(text.trim());
+}
+
+function isValidListItem(message: string): boolean {
+  const trimmed = message.trim();
+  if (trimmed.length > 80) return false;
+  if (trimmed.includes("?")) return false;
+  const hebrewQuestionWords = /(?:^|\s)(?:מה|למה|איך|מתי|איפה)(?:\s|$)/;
+  if (hebrewQuestionWords.test(trimmed)) return false;
+  return true;
 }
 
 /**

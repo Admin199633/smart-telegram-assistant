@@ -17,7 +17,7 @@ import {
   UserProfile
 } from "../types.js";
 import { config } from "../config.js";
-import { AGENT_INTENT_VALUES, AGENT_INTENTS, PROPOSED_ACTION_TYPES } from "../supported-actions.js";
+import { AGENT_INTENT_VALUES, AGENT_INTENTS, PROPOSED_ACTION_TYPES, type AgentIntent } from "../supported-actions.js";
 import { createId } from "../utils/id.js";
 import { formatDateTime, parseNaturalLanguageDate } from "../utils/time.js";
 import { createSmartChatCompletion } from "./smart-chat.js";
@@ -42,6 +42,7 @@ import {
   DELETE_LIST_TRIGGERS,
   DELETE_LIST_BARE_TRIGGERS
 } from "../utils/normalize.js";
+import { logger } from "../utils/logger.js";
 
 interface InterpretArgs {
   userId: string;
@@ -53,23 +54,23 @@ interface InterpretArgs {
 export class LlmService {
   async interpret({ userId, text, profile }: InterpretArgs): Promise<AgentInterpretation> {
     const normalized = normalizeInput(text);
-    if (looksLikeComposeRequest(normalized) && !looksLikeReminderRequest(normalized) && !looksLikeListRequest(normalized) && !looksLikeCreateListRequest(normalized)) {
-      if (config.openAiApiKey) {
-        const composed = await this.tryOpenAiComposeInterpretation(text, profile);
-        if (composed) {
-          return composed;
-        }
+
+    // AI-first: try structured AI for ALL messages before heuristics
+    if (config.openAiApiKey) {
+      const aiResult = await this.tryOpenAiInterpretation({ userId, text, profile });
+      if (aiResult) {
+        logger.info("routing decided by AI", { userId });
+        return aiResult;
       }
+      logger.info("AI unavailable, falling back to heuristics", { userId });
+    }
+
+    // Fallback: compose-specific path
+    if (looksLikeComposeRequest(normalized) && !looksLikeReminderRequest(normalized) && !looksLikeListRequest(normalized) && !looksLikeCreateListRequest(normalized)) {
       return this.heuristicWithSmartFallback(normalized, text, profile);
     }
 
-    if (config.openAiApiKey) {
-      const online = await this.tryOpenAiInterpretation({ userId, text, profile });
-      if (online) {
-        return online;
-      }
-    }
-
+    // Fallback: general heuristics
     return this.heuristicWithSmartFallback(normalized, text, profile);
   }
 
@@ -493,6 +494,22 @@ export class LlmService {
 
   private async tryOpenAiInterpretation({ text, profile }: InterpretArgs): Promise<AgentInterpretation | null> {
     try {
+      const systemPrompt = [
+        "You are an AI assistant for a Hebrew Telegram bot.",
+        "You MUST respond ONLY in valid JSON. No text outside JSON. No explanations.",
+        "",
+        "Format:",
+        '{ "type": "chat" | "action", "message": "string", "action": { "type": "reminder" | "list" | "calendar", "payload": {} } }',
+        "",
+        "Rules:",
+        '- If user asks a general question → type = "chat"',
+        '- If user explicitly requests an action → type = "action"',
+        "- message MUST always be filled (in Hebrew)",
+        '- action only exists if type = "action"',
+        "- NEVER include anything outside JSON",
+        `- Timezone: ${profile.schedulingPreferences.timezone}`
+      ].join("\n");
+
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
@@ -504,53 +521,29 @@ export class LlmService {
           input: [
             {
               role: "system",
-              content: [
-                {
-                  type: "input_text",
-                  text: [
-                    "You are an orchestration agent for a Hebrew Telegram bot.",
-                    "Return JSON with: intent, entities, draftResponse, proposedAction.",
-                    `Intent must be one of ${AGENT_INTENT_VALUES.join(", ")}.`,
-                    `Timezone: ${profile.schedulingPreferences.timezone}`
-                  ].join(" ")
-                }
-              ]
+              content: [{ type: "input_text", text: systemPrompt }]
             },
             {
               role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text
-                }
-              ]
+              content: [{ type: "input_text", text }]
             }
           ],
           text: {
             format: {
               type: "json_schema",
-              name: "agent_interpretation",
+              name: "structured_response",
               schema: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  intent: {
-                    type: "string",
-                    enum: [...AGENT_INTENT_VALUES]
-                  },
-                  entities: {
-                    type: "object",
-                    additionalProperties: true
-                  },
-                  draftResponse: {
-                    type: "string"
-                  },
-                  proposedAction: {
+                  type: { type: "string", enum: ["chat", "action"] },
+                  message: { type: "string" },
+                  action: {
                     type: ["object", "null"],
                     additionalProperties: true
                   }
                 },
-                required: ["intent", "entities", "draftResponse", "proposedAction"]
+                required: ["type", "message", "action"]
               }
             }
           }
@@ -566,10 +559,11 @@ export class LlmService {
         return null;
       }
 
-      const parsed = JSON.parse(data.output_text) as AgentInterpretation;
-      if (parsed.proposedAction) {
-        parsed.proposedAction.id = createId("action");
+      const parsed = parseStructuredResponse(data.output_text);
+      if (!parsed) {
+        return null;
       }
+
       return parsed;
     } catch {
       return null;
@@ -704,6 +698,155 @@ export class LlmService {
     } catch {
       return null;
     }
+  }
+}
+
+interface StructuredLlmResponse {
+  type: "chat" | "action";
+  message: string;
+  action?: {
+    type: string;
+    payload: Record<string, unknown>;
+  } | null;
+}
+
+function parseStructuredResponse(raw: string): AgentInterpretation | null {
+  let parsed: StructuredLlmResponse;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed.type !== "string" || typeof parsed.message !== "string") {
+    return null;
+  }
+
+  if (parsed.type !== "chat" && parsed.type !== "action") {
+    return null;
+  }
+
+  if (parsed.type === "chat") {
+    return {
+      intent: AGENT_INTENTS.OUT_OF_SCOPE,
+      entities: {},
+      draftResponse: parsed.message,
+      proposedAction: undefined
+    };
+  }
+
+  // type === "action" — try to map to a ProposedAction for the confirmation flow
+  const actionInfo = parsed.action;
+  if (!actionInfo || typeof actionInfo.type !== "string") {
+    logger.info("AI action missing or invalid, downgrading to chat", { action: actionInfo });
+    return {
+      intent: AGENT_INTENTS.OUT_OF_SCOPE,
+      entities: {},
+      draftResponse: parsed.message,
+      proposedAction: undefined
+    };
+  }
+
+  const mapped = mapAiActionToProposedAction(actionInfo);
+  if (!mapped) {
+    logger.info("AI action mapping failed, downgrading to chat", { actionType: actionInfo.type });
+    return {
+      intent: AGENT_INTENTS.OUT_OF_SCOPE,
+      entities: {},
+      draftResponse: parsed.message,
+      proposedAction: undefined
+    };
+  }
+
+  logger.info("AI action mapped successfully", { actionType: actionInfo.type, intent: mapped.intent });
+  return {
+    intent: mapped.intent,
+    entities: mapped.entities,
+    draftResponse: parsed.message,
+    proposedAction: mapped.proposedAction
+  };
+}
+
+function mapAiActionToProposedAction(
+  aiAction: { type: string; payload: Record<string, unknown> }
+): { intent: AgentIntent; entities: Record<string, unknown>; proposedAction: ProposedAction } | null {
+  const payload = aiAction.payload ?? {};
+
+  switch (aiAction.type) {
+    case "reminder": {
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const datetime = typeof payload.datetime === "string" ? payload.datetime : "";
+      if (!text) return null;
+      const reminderPayload: ReminderRequest = { text, datetime: datetime || undefined };
+      const missingFields: string[] = [];
+      if (!datetime) missingFields.push("startAt");
+      return {
+        intent: missingFields.length > 0 ? AGENT_INTENTS.CLARIFY : AGENT_INTENTS.CREATE_REMINDER,
+        entities: { text, datetime },
+        proposedAction: {
+          id: createId("reminder"),
+          type: PROPOSED_ACTION_TYPES.CREATE_REMINDER,
+          summary: `תזכורת: "${text}"`,
+          requiresConfirmation: true,
+          payload: reminderPayload,
+          missingFields
+        }
+      };
+    }
+
+    case "list": {
+      const rawItem = payload.item ?? payload.items;
+      const items: string[] = Array.isArray(rawItem)
+        ? rawItem.filter((i): i is string => typeof i === "string" && i.length > 0)
+        : typeof rawItem === "string" && rawItem.length > 0
+          ? [rawItem]
+          : [];
+      if (items.length === 0) return null;
+      const listName = typeof payload.listName === "string" ? payload.listName : undefined;
+      const listPayload: ListRequest = { items, listName };
+      const listDisplayName = listName ?? "קניות";
+      return {
+        intent: AGENT_INTENTS.ADD_TO_LIST,
+        entities: { items },
+        proposedAction: {
+          id: createId("list"),
+          type: PROPOSED_ACTION_TYPES.ADD_TO_LIST,
+          summary: `הוספה לרשימת ${listDisplayName}`,
+          requiresConfirmation: true,
+          payload: listPayload,
+          missingFields: []
+        }
+      };
+    }
+
+    case "calendar": {
+      const title = typeof payload.title === "string" ? payload.title : "";
+      const datetime = typeof payload.datetime === "string" ? payload.datetime : "";
+      if (!title) return null;
+      const calendarPayload: CalendarRequest = {
+        title,
+        participants: [],
+        startAt: datetime || undefined,
+        confidence: datetime ? 0.8 : 0
+      };
+      const missingFields: string[] = [];
+      if (!datetime) missingFields.push("startAt");
+      return {
+        intent: missingFields.length > 0 ? AGENT_INTENTS.CLARIFY : AGENT_INTENTS.SCHEDULE_MEETING,
+        entities: { title },
+        proposedAction: {
+          id: createId("meeting"),
+          type: PROPOSED_ACTION_TYPES.SCHEDULE_MEETING,
+          summary: `לקבוע פגישה "${title}"`,
+          requiresConfirmation: true,
+          payload: calendarPayload,
+          missingFields
+        }
+      };
+    }
+
+    default:
+      return null;
   }
 }
 
