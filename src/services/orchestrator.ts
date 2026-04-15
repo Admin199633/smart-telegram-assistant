@@ -1,5 +1,5 @@
 import { AGENT_INTENTS, PROPOSED_ACTION_TYPES } from "../supported-actions.js";
-import { AgentInterpretation, CalendarRequest, ClarificationState, ConfirmationResult, CreateListRequest, DeleteListRequest, DeleteReminderRequest, ListRequest, PendingEscalation, ProposedAction, RemoveFromListRequest, ReminderRequest, SnoozeReminderRequest } from "../types.js";
+import { AgentInterpretation, CalendarRequest, ClarificationState, ConfirmationResult, CreateListRequest, DeleteListRequest, DeleteReminderRequest, ListRequest, ProposedAction, RemoveFromListRequest, ReminderRequest, SnoozeReminderRequest } from "../types.js";
 import {
   normalizeInput,
   matchesAny,
@@ -25,10 +25,10 @@ import { ListService } from "./list-service.js";
 import { LlmService } from "./llm-service.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReminderService } from "./reminder-service.js";
-import { escalateToGroq } from "./smart-chat.js";
 import { logger } from "../utils/logger.js";
+import { escalateToGroq } from "./smart-chat.js";
 
-const ESCALATION_CANCELLED_MESSAGE = "בסדר, לא אנסה מנוע אחר.";
+const GROQ_ATTRIBUTION = "תשובה מ-GROQ:";
 
 export class OrchestratorService {
   constructor(
@@ -44,16 +44,9 @@ export class OrchestratorService {
   async interpret(userId: string, text: string): Promise<AgentInterpretation> {
     const profile = this.memory.getOrCreateProfile(userId, this.defaultTimezone);
 
-    const pendingEscalation = this.memory.getPendingEscalation(userId);
-    if (pendingEscalation) {
-      const escalationResponse = await this.handlePendingEscalation(userId, text, pendingEscalation);
-      if (escalationResponse) {
-        return escalationResponse;
-      }
-    }
-
     const clarification = this.memory.getClarification(userId);
     if (clarification) {
+      this.clearPendingConfirmationState(userId);
       const normalizedForCheck = normalizeInput(text);
       // When the user is answering "which list?", list-name replies (e.g. "קניות",
       // "לקניות") match LIST_ADD_TRIGGERS and would falsely interrupt the flow.
@@ -81,35 +74,18 @@ export class OrchestratorService {
       logger.info("routing: clarification", { userId, actionType: clarification.action.type, missingFields: clarification.missingFields });
       const resumed = this.resumeClarification(clarification, text, profile.schedulingPreferences.timezone);
       const resolvedResumed = this.resolveListForInterpretation(userId, resumed);
+      const now = new Date().toISOString();
 
-      this.memory.appendConversation(userId, { role: "user", content: text, createdAt: new Date().toISOString() });
-      this.memory.appendConversation(userId, { role: "assistant", content: resolvedResumed.draftResponse, createdAt: new Date().toISOString() });
-
-      if (resolvedResumed.proposedAction) {
-        this.memory.savePendingAction(resolvedResumed.proposedAction);
-        if (resolvedResumed.intent !== AGENT_INTENTS.CLARIFY) {
-          this.memory.setPendingActionUser(userId, resolvedResumed.proposedAction.id);
-        }
-      }
-
-      if (resolvedResumed.intent === AGENT_INTENTS.CLARIFY && resolvedResumed.proposedAction?.missingFields?.length) {
-        this.memory.saveClarification({
-          userId,
-          action: resolvedResumed.proposedAction,
-          missingFields: resolvedResumed.proposedAction.missingFields,
-          question: resolvedResumed.draftResponse,
-          createdAt: new Date().toISOString()
-        });
-      } else {
-        this.memory.clearClarification(userId);
-      }
+      this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+      this.memory.appendConversation(userId, { role: "assistant", content: resolvedResumed.draftResponse, createdAt: now });
+      this.syncConversationalState(userId, resolvedResumed, now);
 
       this.memory.addAuditEntry({
         id: createId("audit"),
         type: "interpretation",
         userId,
         payload: { text, interpretation: resolvedResumed, resumed: true },
-        createdAt: new Date().toISOString()
+        createdAt: now
       });
 
       return resolvedResumed;
@@ -120,7 +96,10 @@ export class OrchestratorService {
     const pendingActionId = this.memory.getPendingActionIdForUser(userId);
     if (pendingActionId) {
       const pendingAction = this.memory.getPendingAction(pendingActionId);
-      if (pendingAction) {
+      if (!pendingAction) {
+        this.memory.clearPendingActionUser(userId);
+        logger.info("routing: cleared stale confirmation", { userId, actionId: pendingActionId });
+      } else {
         logger.info("routing: confirmation", { userId, actionId: pendingActionId });
         if (looksLikeTextConfirm(text)) {
           const result = await this.confirm(userId, pendingActionId);
@@ -129,15 +108,43 @@ export class OrchestratorService {
           return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: result.message };
         }
         if (looksLikeTextCancel(text)) {
-          this.memory.removePendingAction(pendingActionId);
-          this.memory.clearPendingActionUser(userId);
+          this.clearPendingConfirmationState(userId);
           this.memory.clearClarification(userId);
-          this.memory.clearPendingEscalation(userId);
           this.memory.appendConversation(userId, { role: "user", content: text, createdAt: new Date().toISOString() });
           this.memory.appendConversation(userId, { role: "assistant", content: "בוטל.", createdAt: new Date().toISOString() });
           return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: "בוטל." };
         }
+
+        this.clearPendingConfirmationState(userId);
+        logger.info("routing: confirmation cleared on new message", { userId, actionId: pendingActionId });
       }
+    }
+
+    // Pending GROQ escalation: user was offered a switch after a Gemini refusal
+    const pendingEscalation = this.memory.getPendingEscalation(userId);
+    if (pendingEscalation) {
+      if (looksLikeTextConfirm(text)) {
+        this.memory.clearPendingEscalation(userId);
+        logger.info("routing: GROQ escalation approved", { userId });
+        const groqResponse = await escalateToGroq(pendingEscalation.originalMessage);
+        const response = `${GROQ_ATTRIBUTION}\n${groqResponse}`;
+        const now = new Date().toISOString();
+        this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+        this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response };
+      }
+      if (looksLikeTextCancel(text)) {
+        this.memory.clearPendingEscalation(userId);
+        logger.info("routing: GROQ escalation declined", { userId });
+        const response = "בסדר, אני כאן אם תצטרך משהו אחר.";
+        const now = new Date().toISOString();
+        this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+        this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response };
+      }
+      // Neither yes nor no — user moved on; clear the offer and route normally
+      this.memory.clearPendingEscalation(userId);
+      logger.info("routing: GROQ escalation expired on new message", { userId });
     }
 
     logger.info("routing: ai", { userId });
@@ -240,18 +247,15 @@ export class OrchestratorService {
     const resolved = this.resolveListForInterpretation(userId, interpretation);
     const now = new Date().toISOString();
 
-    if (isEscalationOffer(resolved)) {
-      const sourceModel = typeof resolved.entities.sourceModel === "string" ? resolved.entities.sourceModel : "Gemini";
-      const targetModel = typeof resolved.entities.targetModel === "string" ? resolved.entities.targetModel : "Groq";
+    // Save escalation state so the next message can handle yes/no
+    if (resolved.isRefusalOffer) {
       this.memory.savePendingEscalation(userId, {
         originalMessage: text,
-        sourceModel,
-        targetModel,
+        sourceModel: "gemini",
+        targetModel: "groq",
         createdAt: now
       });
-      logger.info("routing: Gemini refusal, escalation offered", { userId, sourceModel, targetModel });
-    } else {
-      this.memory.clearPendingEscalation(userId);
+      logger.info("routing: GROQ switch offered after refusal", { userId });
     }
 
     this.memory.appendConversation(userId, {
@@ -265,27 +269,7 @@ export class OrchestratorService {
       createdAt: now
     });
 
-    if (resolved.proposedAction) {
-      this.memory.savePendingAction(resolved.proposedAction);
-      if (resolved.intent !== AGENT_INTENTS.CLARIFY) {
-        this.memory.setPendingActionUser(userId, resolved.proposedAction.id);
-      }
-    }
-
-    if (
-      resolved.intent === AGENT_INTENTS.CLARIFY &&
-      resolved.proposedAction?.missingFields?.length
-    ) {
-      this.memory.saveClarification({
-        userId,
-        action: resolved.proposedAction,
-        missingFields: resolved.proposedAction.missingFields,
-        question: resolved.draftResponse,
-        createdAt: now
-      });
-    } else {
-      this.memory.clearClarification(userId);
-    }
+    this.syncConversationalState(userId, resolved, now);
 
     this.memory.addAuditEntry({
       id: createId("audit"),
@@ -299,78 +283,6 @@ export class OrchestratorService {
     });
 
     return resolved;
-  }
-
-  private async handlePendingEscalation(
-    userId: string,
-    text: string,
-    escalation: PendingEscalation
-  ): Promise<AgentInterpretation | undefined> {
-    const now = new Date().toISOString();
-
-    if (looksLikeEscalationApproval(text)) {
-      this.memory.clearPendingEscalation(userId);
-      logger.info("routing: user approved escalation", {
-        userId,
-        sourceModel: escalation.sourceModel,
-        targetModel: escalation.targetModel
-      });
-
-      const reply = await escalateToGroq(escalation.originalMessage);
-      this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
-      this.memory.appendConversation(userId, { role: "assistant", content: reply, createdAt: now });
-      this.memory.addAuditEntry({
-        id: createId("audit"),
-        type: "interpretation",
-        userId,
-        payload: {
-          text,
-          escalationApproved: true,
-          sourceModel: escalation.sourceModel,
-          targetModel: escalation.targetModel
-        },
-        createdAt: now
-      });
-
-      return {
-        intent: AGENT_INTENTS.OUT_OF_SCOPE,
-        entities: {},
-        draftResponse: reply
-      };
-    }
-
-    if (looksLikeEscalationDecline(text)) {
-      this.memory.clearPendingEscalation(userId);
-      logger.info("routing: user declined escalation", {
-        userId,
-        sourceModel: escalation.sourceModel,
-        targetModel: escalation.targetModel
-      });
-
-      this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
-      this.memory.appendConversation(userId, { role: "assistant", content: ESCALATION_CANCELLED_MESSAGE, createdAt: now });
-      this.memory.addAuditEntry({
-        id: createId("audit"),
-        type: "interpretation",
-        userId,
-        payload: {
-          text,
-          escalationApproved: false,
-          sourceModel: escalation.sourceModel,
-          targetModel: escalation.targetModel
-        },
-        createdAt: now
-      });
-
-      return {
-        intent: AGENT_INTENTS.OUT_OF_SCOPE,
-        entities: {},
-        draftResponse: ESCALATION_CANCELLED_MESSAGE
-      };
-    }
-
-    this.memory.clearPendingEscalation(userId);
-    return undefined;
   }
 
   async confirm(userId: string, actionId: string, chatId?: number): Promise<ConfirmationResult> {
@@ -488,7 +400,6 @@ export class OrchestratorService {
     this.memory.removePendingAction(actionId);
     this.memory.clearPendingActionUser(userId);
     this.memory.clearClarification(userId);
-    this.memory.clearPendingEscalation(userId);
     this.memory.addAuditEntry({
       id: createId("audit"),
       type: "confirmation",
@@ -506,6 +417,41 @@ export class OrchestratorService {
       message: confirmationMessage(action, result),
       result
     };
+  }
+
+  private clearPendingConfirmationState(userId: string): void {
+    const pendingActionId = this.memory.getPendingActionIdForUser(userId);
+    if (!pendingActionId) {
+      return;
+    }
+
+    this.memory.removePendingAction(pendingActionId);
+    this.memory.clearPendingActionUser(userId);
+  }
+
+  private syncConversationalState(userId: string, interpretation: AgentInterpretation, createdAt: string): void {
+    if (interpretation.intent === AGENT_INTENTS.CLARIFY && interpretation.proposedAction?.missingFields?.length) {
+      this.clearPendingConfirmationState(userId);
+      this.memory.saveClarification({
+        userId,
+        action: interpretation.proposedAction,
+        missingFields: interpretation.proposedAction.missingFields,
+        question: interpretation.draftResponse,
+        createdAt
+      });
+      return;
+    }
+
+    this.memory.clearClarification(userId);
+
+    if (interpretation.proposedAction) {
+      this.clearPendingConfirmationState(userId);
+      this.memory.savePendingAction(interpretation.proposedAction);
+      this.memory.setPendingActionUser(userId, interpretation.proposedAction.id);
+      return;
+    }
+
+    this.clearPendingConfirmationState(userId);
   }
 
   private resolveListForInterpretation(userId: string, interpretation: AgentInterpretation): AgentInterpretation {
@@ -908,18 +854,6 @@ function looksLikeTextConfirm(text: string): boolean {
 
 function looksLikeTextCancel(text: string): boolean {
   return /^(?:לא|no|בטל|ביטול|cancel|עזוב|לא משנה|never mind)(?:\s|$)/i.test(text.trim());
-}
-
-function looksLikeEscalationApproval(text: string): boolean {
-  return /^(?:כן|yes|sure|ok|אוקי|בסדר|אישור|אשר)(?:\s|$)/i.test(text.trim());
-}
-
-function looksLikeEscalationDecline(text: string): boolean {
-  return /^(?:לא|no|בטל|ביטול|cancel|עזוב|לא משנה|never mind)(?:\s|$)/i.test(text.trim());
-}
-
-function isEscalationOffer(interpretation: AgentInterpretation): boolean {
-  return interpretation.entities.escalationAvailable === true;
 }
 
 function isValidListItem(message: string): boolean {

@@ -1,5 +1,37 @@
 # Worklog
 
+## 2026-04-15 - Re-enable Refusal → GROQ Switch Offer
+
+**What changed:** Re-enabled the Gemini refusal → GROQ manual switch offer. When Gemini refuses (detected by existing refusal patterns in `smart-chat.ts`), the bot now returns a user-facing message offering to switch to GROQ instead of ending with a generic refusal.
+
+**Reused existing code:**
+- `smart-chat.ts`: `PRIMARY_ENGINE_ESCALATION_PROMPT`, `escalateToGroq()`, `getGeminiOutcome()`, refusal pattern detection — all intact from prior implementation
+- `memory-store.ts`: `savePendingEscalation()`, `getPendingEscalation()` (with 5-min TTL), `clearPendingEscalation()` — all intact
+- `types.ts`: `PendingEscalation` interface — intact
+
+**New code:**
+- `types.ts`: Added `isRefusalOffer?: boolean` to `AgentInterpretation` to mark refusal offers
+- `llm-service.ts`: Changed refusal case to return `PRIMARY_ENGINE_ESCALATION_PROMPT` with `isRefusalOffer: true` instead of `NORMALIZED_REFUSAL_MESSAGE`
+- `orchestrator.ts`: Added pending escalation check before normal routing — handles yes (call GROQ with original message, return attributed response), no (clear state, continue normally), or unrelated message (clear stale offer, route normally). Saves escalation state when `isRefusalOffer` is true.
+
+**Edge cases handled:**
+- Stale escalation auto-expires after 5 minutes (existing TTL in `getPendingEscalation`)
+- User ignores offer and sends unrelated message → offer cleared, normal routing proceeds
+- GROQ response clearly attributed with "תשובה מ-GROQ:" prefix
+- No re-offer loop: GROQ responses are plain text, not routed back through refusal detection
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Added `isRefusalOffer?: boolean` to `AgentInterpretation` |
+| `src/services/llm-service.ts` | Import `PRIMARY_ENGINE_ESCALATION_PROMPT`; refusal returns escalation prompt with marker |
+| `src/services/orchestrator.ts` | Import `escalateToGroq`; add escalation check before routing; save escalation state on refusal offer |
+
+**Follow-up:** Add tests for the refusal → offer → approve/decline flow.
+
+---
+
 ## 2026-04-15 - List Safe Mode (Do Not Corrupt Lists)
 
 **What changed:** Replaced the create/view/open list mappings from Task 8.3 with safe null returns. Only `add_to_list` (with real items) now maps to `ADD_TO_LIST`. All other list intents (`create_list`, `view_list`, `open_list`) return `null` → chat fallback with the AI's message.
@@ -871,3 +903,18 @@ Removed the shopping-list-only restriction. Users can now create, view, and add 
 - Implemented: added concise logs for Gemini success, Gemini technical fallback, Gemini refusal escalation offers, escalation approvals/declines, and Groq escalation success/failure.
 - Files changed: `src/services/smart-chat.ts`, `src/services/llm-service.ts`, `src/services/orchestrator.ts`, `src/services/memory-store.ts`, `src/types.ts`, `WORKLOG.md`
 - Next step to implement: add focused automated coverage for the refusal/escalation path so the yes/no escalation flow stays stable as chat routing evolves.
+
+## 2026-04-15 - Disable Refusal Escalation Temporarily
+
+- Implemented: disabled the Gemini refusal -> Groq escalation path in chat routing so Gemini refusals now return a normalized refusal message, while Gemini technical failures still fall back to Groq automatically.
+- Implemented: orchestrator now clears any pending escalation state if it is encountered in the current flow, instead of opening a second confirmation/escalation path.
+- Files changed: `src/services/llm-service.ts`, `src/services/orchestrator.ts`, `WORKLOG.md`
+- Next step to implement: remove the leftover temporary escalation helpers and add targeted tests for refusal vs technical-failure routing once the flow is stable again.
+
+## 2026-04-15 - Single Active Conversational State
+
+- Implemented: enforced a single active conversational state per user in `interpret()` with strict priority: clarification first, then pending confirmation, then normal AI/chat routing.
+- Implemented: when clarification is active, any stale pending confirmation is cleared; when confirmation receives an unrelated new message, it is cleared before normal routing continues.
+- Implemented: removed leftover escalation-specific branching/helpers from the orchestrator so chat state is now limited to clarification, confirmation, or none.
+- Files changed: `src/services/orchestrator.ts`, `WORKLOG.md`
+- Next step to implement: add focused regression coverage for clarification escape and confirmation reset flows so unrelated messages cannot re-open stale reminder/list prompts.

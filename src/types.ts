@@ -145,6 +145,7 @@ export interface AgentInterpretation {
   entities: Record<string, unknown>;
   draftResponse: string;
   proposedAction?: ProposedAction;
+  isRefusalOffer?: boolean;
 }
 
 export interface PendingEscalation {

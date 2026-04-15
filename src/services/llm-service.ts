@@ -51,6 +51,8 @@ interface InterpretArgs {
   conversation?: ConversationTurn[];
 }
 
+const NORMALIZED_REFUSAL_MESSAGE = "אני לא יכול לעזור עם זה, אבל אשמח לעזור במשהו אחר.";
+
 export class LlmService {
   async interpret({ userId, text, profile }: InterpretArgs): Promise<AgentInterpretation> {
     const normalized = normalizeInput(text);
@@ -100,16 +102,13 @@ export class LlmService {
           };
         }
 
-        logger.info("llm-service: Gemini refusal, escalation offer prepared", { reason: outcome.reason });
+        logger.info("llm-service: Gemini refusal, offering GROQ switch", { reason: outcome.reason });
         return {
           intent: AGENT_INTENTS.OUT_OF_SCOPE,
-          entities: {
-            escalationAvailable: true,
-            sourceModel: "Gemini",
-            targetModel: "Groq"
-          },
+          entities: {},
           draftResponse: PRIMARY_ENGINE_ESCALATION_PROMPT,
-          proposedAction: undefined
+          proposedAction: undefined,
+          isRefusalOffer: true
         };
       } catch {
         // fall through to heuristic result
