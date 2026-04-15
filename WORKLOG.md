@@ -1,5 +1,109 @@
 # Worklog
 
+## 2026-04-16 - Handle list references without valid context
+
+**Problem:** `"תציג לי את 1"` without context fell through to Gemini, producing wrong responses like "I don't have access..."
+
+**Fix:** Added an `isExplicitListViewReference()` guard. When `tryResolveNumberedListReference` matches AND the input has an explicit view prefix (e.g. `תציג לי את`) BUT no valid context exists → return a FEATURE response: `"לא הבנתי לאיזו רשימה אתה מתכוון. תוכל לבקש לראות את הרשימות שלך קודם?"`
+
+**Key design choice:** Only explicit view-command references trigger the no-context error. Bare `"1"` or standalone ordinals (`"הראשונה"`) without context still fall through to Gemini — they're ambiguous and could be unrelated messages.
+
+| Input | With context | Without context |
+|-------|-------------|-----------------|
+| `תציג לי את 1` | FEATURE (resolve) | FEATURE (no-context error) |
+| `תפתח את השנייה` | FEATURE (resolve) | FEATURE (no-context error) |
+| `1` | FEATURE (resolve) | Gemini (ambiguous) |
+| `הראשונה` | FEATURE (resolve) | Gemini (ambiguous) |
+| `מה זה 1 חלקי 2?` | Gemini | Gemini |
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/orchestrator.ts` | Added `isExplicitListViewReference()` helper; added no-context branch in resolution block |
+
+---
+
+## 2026-04-16 - Verify FEATURE priority over Gemini for list-context references
+
+**Result:** No code changes needed. The previous task's implementation already placed the numbered-list resolution block at the correct routing priority (after clarification/confirmation/GROQ, **before** the Gemini LLM call). Verified:
+
+- `"תציג לי את 1"` → FEATURE (view prefix + bare number)
+- `"1"` → FEATURE (bare number, full-match `^(\d+)$`)
+- `"תפתח את השנייה"` → FEATURE (view prefix + ordinal)
+- `"מה זה 1 חלקי 2?"` → Gemini (no pattern match, falls through)
+- Active clarification → handled before list-ref block (no conflict)
+- Active confirmation → handled before list-ref block (no conflict)
+- Expired context (>5 min) → silently falls through to Gemini
+
+**Routing order in `interpret()`:**
+1. Clarification (early return)
+2. Confirmation (early return)
+3. GROQ escalation (early return)
+4. **Numbered list reference → FEATURE** (early return)
+5. Gemini LLM call (fallback)
+
+---
+
+## 2026-04-16 - Resolve numeric/ordinal list references from saved context
+
+**What changed:** When the user sends a numeric or ordinal reference after seeing a numbered list of lists, the orchestrator now resolves it to a concrete list and returns its contents via FEATURE — bypassing Gemini entirely.
+
+**Supported patterns:**
+- Bare number: `1`, `2`
+- View + number: `תציג לי את 1`, `תפתח את 2`
+- View + "רשימה מספר N": `תציג לי את רשימה מספר 1`
+- Ordinals (standalone or after view prefix): `הראשונה`, `תציג לי את השנייה`
+- Covers masculine/feminine forms up to 5th ordinal
+
+**Resolution rules:**
+- Only activates when valid `NumberedListContext` exists (saved by VIEW_LISTS)
+- Context expires after 5 minutes (same TTL as `PendingEscalation`)
+- Invalid index returns FEATURE error: `"מספר לא תקין. יש לך N רשימות."`
+- No context / expired context → falls through to normal LLM routing
+- Resolved list is displayed using the same VIEW_LIST logic (item listing)
+
+**Edge cases handled:**
+- Index out of range (0, negative via 1-based, or beyond list count)
+- Expired context (>5 min) silently falls through
+- List was deleted between context save and reference → shows "not found"
+- Bare ordinal without view prefix (e.g. just `הראשונה`)
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/orchestrator.ts` | Added `tryResolveNumberedListReference()` helper + resolution block before LLM call |
+
+---
+
+## 2026-04-16 - Store numbered list context after VIEW_LISTS
+
+**What changed:** After the bot shows the user their lists as a numbered list (VIEW_LISTS intent), a minimal `NumberedListContext` is now saved per user. This stores `{ type: "lists", items: string[], timestamp }` so future messages can resolve numeric/ordinal references (resolution not yet implemented).
+
+When there are no lists (empty response), any previous context is cleared.
+
+**State shape added:**
+```ts
+interface NumberedListContext {
+  type: "lists";
+  items: string[];    // list names in display order
+  timestamp: string;  // ISO 8601
+}
+```
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Added `NumberedListContext` interface |
+| `src/services/memory-store.ts` | Added `numberedListContexts` map + `save/get/clearNumberedListContext()` |
+| `src/services/orchestrator.ts` | Save context after VIEW_LISTS numbered response; clear on empty |
+
+**No visible behavior changes.** No routing changes.
+
+---
+
 ## 2026-04-15 - Extend Gemini Refusal Detection
 
 **What changed:** Added 2 missing refusal patterns to `REFUSAL_PATTERNS` in `smart-chat.ts`:

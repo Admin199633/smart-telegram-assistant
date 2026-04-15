@@ -211,6 +211,12 @@ export interface OAuthState {
   createdAt: string;
 }
 
+export interface NumberedListContext {
+  type: "lists";
+  items: string[];
+  timestamp: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: {

@@ -148,6 +148,51 @@ export class OrchestratorService {
       logger.info("routing: GROQ escalation expired on new message", { userId });
     }
 
+    // Numbered list reference resolution: intercept before LLM when the user
+    // refers to a list by number or ordinal after seeing a numbered list of lists.
+    const listRefIndex = tryResolveNumberedListReference(text);
+    if (listRefIndex !== undefined && this.listService) {
+      const listContext = this.memory.getNumberedListContext(userId);
+      const contextValid = listContext &&
+        Date.now() - new Date(listContext.timestamp).getTime() <= 5 * 60 * 1000;
+
+      if (contextValid) {
+        const now = new Date().toISOString();
+        if (listRefIndex < 0 || listRefIndex >= listContext.items.length) {
+          const response = `מספר לא תקין. יש לך ${listContext.items.length} רשימות.`;
+          this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+          this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+          return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response, engine: "FEATURE" };
+        }
+        const resolvedName = listContext.items[listRefIndex];
+        const list = this.listService.findListByName(userId, resolvedName);
+        let response: string;
+        if (!list) {
+          response = `לא מצאתי רשימה בשם "${resolvedName}".`;
+        } else {
+          const items = this.listService.listItems(list.id).filter((i) => i.status === "active");
+          response = items.length === 0
+            ? `רשימת ${list.name} ריקה כרגע.`
+            : `רשימת ${list.name}:\n${items.map((item, idx) => `${idx + 1}. ${item.text}`).join("\n")}`;
+        }
+        logger.info("routing: numbered list reference resolved", { userId, index: listRefIndex, resolvedName });
+        this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+        this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+        return { intent: AGENT_INTENTS.VIEW_LIST, entities: { listName: resolvedName }, draftResponse: response, engine: "FEATURE" };
+      }
+
+      // Explicit list-view reference (has a view prefix) but no valid context —
+      // return a helpful FEATURE response instead of falling through to Gemini.
+      if (isExplicitListViewReference(text)) {
+        const now = new Date().toISOString();
+        const response = "לא הבנתי לאיזו רשימה אתה מתכוון. תוכל לבקש לראות את הרשימות שלך קודם?";
+        logger.info("routing: explicit list reference without context", { userId });
+        this.memory.appendConversation(userId, { role: "user", content: text, createdAt: now });
+        this.memory.appendConversation(userId, { role: "assistant", content: response, createdAt: now });
+        return { intent: AGENT_INTENTS.OUT_OF_SCOPE, entities: {}, draftResponse: response, engine: "FEATURE" };
+      }
+    }
+
     logger.info("routing: ai", { userId });
     const conversation = this.memory.listConversation(userId);
     const interpretation = await this.llm.interpret({
@@ -176,9 +221,17 @@ export class OrchestratorService {
 
     if (interpretation.intent === AGENT_INTENTS.VIEW_LISTS && this.listService) {
       const lists = this.listService.listLists(userId);
-      interpretation.draftResponse = lists.length === 0
-        ? "אין לך עדיין רשימות שמורות."
-        : `הרשימות שלך:\n${lists.map((l, idx) => `${idx + 1}. ${l.name}`).join("\n")}`;
+      if (lists.length === 0) {
+        interpretation.draftResponse = "אין לך עדיין רשימות שמורות.";
+        this.memory.clearNumberedListContext(userId);
+      } else {
+        interpretation.draftResponse = `הרשימות שלך:\n${lists.map((l, idx) => `${idx + 1}. ${l.name}`).join("\n")}`;
+        this.memory.saveNumberedListContext(userId, {
+          type: "lists",
+          items: lists.map((l) => l.name),
+          timestamp: new Date().toISOString()
+        });
+      }
     }
 
     if (interpretation.intent === AGENT_INTENTS.DELETE_LIST && this.listService) {
@@ -998,6 +1051,73 @@ function confirmationMessage(action: ProposedAction, result: unknown): string {
     default:
       return "הטיוטה נשמרה ומוכנה לשימוש.";
   }
+}
+
+/**
+ * Detects numeric or ordinal list references in user input.
+ * Returns the 0-based index if matched, or undefined if the input is not a list reference.
+ *
+ * Supported patterns:
+ * - Bare number: "1", "2"
+ * - "תציג/תפתח/הצג ... את N" / "את רשימה מספר N" / "את רשימה N"
+ * - Hebrew ordinals: הראשונה, השנייה, השלישית, etc.
+ */
+function tryResolveNumberedListReference(text: string): number | undefined {
+  const trimmed = text.trim();
+
+  // Hebrew ordinal map (0-based)
+  const ORDINALS: Record<string, number> = {
+    "ראשון": 0, "ראשונה": 0, "הראשון": 0, "הראשונה": 0,
+    "שני": 1, "שנייה": 1, "שניה": 1, "השני": 1, "השנייה": 1, "השניה": 1,
+    "שלישי": 2, "שלישית": 2, "השלישי": 2, "השלישית": 2,
+    "רביעי": 3, "רביעית": 3, "הרביעי": 3, "הרביעית": 3,
+    "חמישי": 4, "חמישית": 4, "החמישי": 4, "החמישית": 4
+  };
+
+  // Bare number: "1", "2", etc.
+  const bareNum = trimmed.match(/^(\d+)$/);
+  if (bareNum) {
+    return parseInt(bareNum[1], 10) - 1;
+  }
+
+  // "תציג/תפתח/הצג/הראה ... את רשימה מספר N" or "את רשימה N" or "את N" or ordinal
+  const viewPrefix = /^(?:תציג|תציגי|הצג|הציגי|תפתח|תפתחי|פתח|פתחי|תראה|תראי|הראה|הראי)\s+(?:לי\s+)?את\s+/;
+  const afterPrefix = trimmed.replace(viewPrefix, "");
+  if (afterPrefix !== trimmed) {
+    // "רשימה מספר N" or "רשימה N"
+    const listNumMatch = afterPrefix.match(/^רשימה\s+(?:מספר\s+)?(\d+)$/);
+    if (listNumMatch) {
+      return parseInt(listNumMatch[1], 10) - 1;
+    }
+    // Bare number after prefix: "את 1"
+    const numMatch = afterPrefix.match(/^(\d+)$/);
+    if (numMatch) {
+      return parseInt(numMatch[1], 10) - 1;
+    }
+    // Ordinal after prefix: "את הראשונה"
+    const ordinalTrimmed = afterPrefix.trim();
+    if (ordinalTrimmed in ORDINALS) {
+      return ORDINALS[ordinalTrimmed];
+    }
+  }
+
+  // Standalone ordinal (no prefix): "הראשונה", "השנייה"
+  if (trimmed in ORDINALS) {
+    return ORDINALS[trimmed];
+  }
+
+  return undefined;
+}
+
+/**
+ * Returns true when the input is an unambiguous list-view reference —
+ * i.e. it has a Hebrew view-command prefix like "תציג לי את".
+ * Bare numbers ("1") and standalone ordinals ("הראשונה") are ambiguous
+ * without context and should NOT trigger the no-context error.
+ */
+function isExplicitListViewReference(text: string): boolean {
+  const viewPrefix = /^(?:תציג|תציגי|הצג|הציגי|תפתח|תפתחי|פתח|פתחי|תראה|תראי|הראה|הראי)\s+(?:לי\s+)?את\s+/;
+  return viewPrefix.test(text.trim());
 }
 
 function isSkippedResult(result: unknown): result is { status: string } {

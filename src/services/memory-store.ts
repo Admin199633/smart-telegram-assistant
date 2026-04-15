@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AuditEntry, ClarificationState, ConversationTurn, GoogleTokens, OAuthState, PendingEscalation, ProposedAction, UserProfile } from "../types.js";
+import { AuditEntry, ClarificationState, ConversationTurn, GoogleTokens, NumberedListContext, OAuthState, PendingEscalation, ProposedAction, UserProfile } from "../types.js";
 
 export class MemoryStore {
   private readonly profiles = new Map<string, UserProfile>();
@@ -11,6 +11,7 @@ export class MemoryStore {
   private readonly googleTokens = new Map<string, GoogleTokens>();
   private readonly oauthStates = new Map<string, OAuthState>();
   private readonly pendingEscalations = new Map<string, PendingEscalation>();
+  private readonly numberedListContexts = new Map<string, NumberedListContext>();
   private readonly auditLog: AuditEntry[] = [];
   private readonly tokensFilePath = path.join(process.cwd(), "data", "google-tokens.json");
 
@@ -132,6 +133,18 @@ export class MemoryStore {
 
   clearPendingEscalation(userId: string): void {
     this.pendingEscalations.delete(userId);
+  }
+
+  saveNumberedListContext(userId: string, context: NumberedListContext): void {
+    this.numberedListContexts.set(userId, context);
+  }
+
+  getNumberedListContext(userId: string): NumberedListContext | undefined {
+    return this.numberedListContexts.get(userId);
+  }
+
+  clearNumberedListContext(userId: string): void {
+    this.numberedListContexts.delete(userId);
   }
 
   addAuditEntry(entry: AuditEntry): void {
