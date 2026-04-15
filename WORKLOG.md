@@ -1,5 +1,52 @@
 # Worklog
 
+## 2026-04-15 - Split List Intents (Create / View / Open / Add)
+
+**What changed:** AI now distinguishes between four list intents instead of treating all list requests as "add item".
+
+**Prompt changes:** Added "List intent rules" section with explicit examples for each intent:
+- `create_list` — "תכין לי רשימת קניות" → creates list
+- `view_list` — "תציג לי את הרשימות" → shows list(s)
+- `open_list` — "תפתח את רשימת קניות" → opens list (mapped to view)
+- `add_to_list` — "תוסיף חלב" → adds items
+
+**Mapping changes in `mapAiActionToProposedAction`:**
+- `create_list` → `CREATE_LIST` intent with `CreateListRequest` payload + confirmation
+- `view_list` → `VIEW_LIST` or `VIEW_LISTS` intent (no proposedAction, orchestrator handles display)
+- `open_list` → mapped to `VIEW_LIST` (no separate execution flow exists)
+- `add_to_list` → `ADD_TO_LIST` unchanged (requires items, otherwise returns null → chat)
+
+**Safety:** "תכין לי רשימת קניות" no longer becomes an item in a list. Unsupported intents degrade to view or chat, never to add_to_list.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Added list intent rules to prompt; split list case in `mapAiActionToProposedAction` into 4 sub-intents; made `proposedAction` optional in mapper return type |
+
+---
+
+## 2026-04-15 - Action Strict Mode (Prevent False Actions)
+
+**What changed:** Tightened the AI system prompt to prevent false action detection. Added "Action strict mode" rules with explicit Hebrew action phrases, a clear list of chat-only categories (stories, descriptions, questions, pasted content), and concrete negative examples.
+
+**Key rule:** If the user MENTIONS an activity but does NOT explicitly ask the assistant to do it → `type = "chat"`. If there is ANY doubt → `type = "chat"`.
+
+**Examples added to prompt:**
+- `"שכחתי לקנות חלב אתמול"` → chat (mention, not request)
+- `"דני קם בבוקר מאוחר"` → chat (story)
+- `"תזכיר לי לקנות חלב"` → action (explicit request)
+
+**Safety guard (already existed from Task 3.2):** If AI returns `type = "action"` but the payload is missing core fields (no text for reminder, no items for list, no title for calendar), it is automatically downgraded to chat by `mapAiActionToProposedAction`. No new code guard needed.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Rewrote action rules in system prompt: added strict mode, negative examples, explicit action phrases |
+
+---
+
 ## 2026-04-15 - Smart Default Suggestions (Reduce Clarifications)
 
 **What changed:** Updated the AI system prompt to suggest reasonable defaults when users omit details (e.g. time/date) instead of leaving the payload empty and relying on clarification.

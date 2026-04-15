@@ -503,13 +503,62 @@ export class LlmService {
         "",
         "Rules:",
         '- If user asks a general question → type = "chat"',
-        '- If user explicitly requests an action → type = "action"',
         "- message MUST always be filled (in Hebrew)",
         '- action only exists if type = "action"',
         "- NEVER include anything outside JSON",
         `- Timezone: ${profile.schedulingPreferences.timezone}`,
         "",
-        "Smart defaults:",
+        "Action strict mode:",
+        'Return type = "action" ONLY if the user EXPLICITLY requests the assistant to do something.',
+        "Explicit action phrases (Hebrew):",
+        '- "תזכיר לי..." / "תקבע..." / "שים...ברשימה" / "תוסיף..." / "צור רשימה..."',
+        '- "תציג לי את..." / "תמחק..." / "תסיר..."',
+        "",
+        'Return type = "chat" for ALL of the following:',
+        "- Stories, descriptions, thoughts, opinions",
+        "- Questions about anything (מה, למה, איך, מתי, איפה)",
+        "- Summaries, explanations, writing tasks",
+        "- Pasted content, quoted text",
+        '- Sentences that MENTION an activity but do NOT ask the assistant to do it.',
+        '  For example: "שכחתי לקנות חלב" is NOT an action request.',
+        '  "אני אתקשר בערב" is NOT an action request.',
+        '  "דני קם בבוקר מאוחר" is NOT an action request.',
+        "",
+        "If there is ANY doubt → return type = \"chat\".",
+        "",
+        "Examples:",
+        'User: "דני קם בבוקר מאוחר מהרגיל..." → type = "chat"',
+        'User: "רגע, שכחתי לקנות חלב אתמול" → type = "chat"',
+        'User: "מה דני עשה כשהוא ירד במדרגות?" → type = "chat"',
+        'User: "תזכיר לי לקנות חלב" → type = "action"',
+        "",
+        "List intent rules:",
+        "For list-related requests, you MUST distinguish between these intents using payload.intent:",
+        "",
+        "1. create_list — user asks to create a new list.",
+        '   Examples: "תכין לי רשימת קניות", "צור רשימה", "תיצור רשימת סופר"',
+        '   → payload: { "intent": "create_list", "listName": "קניות" }',
+        "",
+        "2. view_list — user asks to display a list or all lists.",
+        '   Examples: "תציג לי את רשימת הקניות", "תראה לי את כל הרשימות", "מה יש ברשימה"',
+        '   → payload: { "intent": "view_list", "listName": "קניות" } or { "intent": "view_list" } for all lists',
+        "",
+        "3. open_list — user asks to open/select/enter a list.",
+        '   Examples: "תיכנס לקניות", "תפתח את רשימת קניות", "תעבור לרשימת סופר"',
+        '   → payload: { "intent": "open_list", "listName": "קניות" }',
+        "",
+        "4. add_to_list — user explicitly asks to add item(s) or clearly provides list items.",
+        '   Examples: "תוסיף חלב", "שים חלב ברשימה", "חלב, לחם, ביצים"',
+        '   → payload: { "intent": "add_to_list", "items": ["חלב", "לחם", "ביצים"], "listName": "קניות" }',
+        "",
+        "CRITICAL list rules:",
+        '- "תכין לי רשימת קניות" is create_list, NOT add_to_list.',
+        '- "תפתח את רשימת קניות" is open_list, NOT add_to_list.',
+        '- "תציג לי את כל הרשימות" is view_list, NOT add_to_list.',
+        "- NEVER put the whole user sentence as an item text.",
+        "- If no items are explicitly stated, do NOT invent items.",
+        "",
+        "Smart defaults (ONLY for valid action requests):",
         "If the user requests an action but misses details (like time or date):",
         "- DO NOT ask a question. INSTEAD, suggest a reasonable default.",
         "- Always include the suggested datetime in the action payload.",
@@ -806,7 +855,7 @@ function normalizeAiDatetime(raw: string, timezone: string): { iso: string | und
 function mapAiActionToProposedAction(
   aiAction: { type: string; payload: Record<string, unknown> },
   timezone: string
-): { intent: AgentIntent; entities: Record<string, unknown>; proposedAction: ProposedAction } | null {
+): { intent: AgentIntent; entities: Record<string, unknown>; proposedAction?: ProposedAction } | null {
   const payload = aiAction.payload ?? {};
 
   switch (aiAction.type) {
@@ -833,6 +882,42 @@ function mapAiActionToProposedAction(
     }
 
     case "list": {
+      const listIntent = typeof payload.intent === "string" ? payload.intent : "add_to_list";
+      const listName = typeof payload.listName === "string" ? payload.listName : undefined;
+
+      if (listIntent === "create_list") {
+        if (!listName) return null;
+        const createPayload: CreateListRequest = { listName };
+        return {
+          intent: AGENT_INTENTS.CREATE_LIST,
+          entities: { listName },
+          proposedAction: {
+            id: createId("list_create"),
+            type: PROPOSED_ACTION_TYPES.CREATE_LIST,
+            summary: `יצירת רשימת ${listName}`,
+            requiresConfirmation: true,
+            payload: createPayload,
+            missingFields: []
+          }
+        };
+      }
+
+      if (listIntent === "view_list") {
+        return {
+          intent: listName ? AGENT_INTENTS.VIEW_LIST : AGENT_INTENTS.VIEW_LISTS,
+          entities: { listName }
+        };
+      }
+
+      if (listIntent === "open_list") {
+        // open_list is not a supported execution flow — treat as view
+        return {
+          intent: listName ? AGENT_INTENTS.VIEW_LIST : AGENT_INTENTS.VIEW_LISTS,
+          entities: { listName }
+        };
+      }
+
+      // add_to_list
       const rawItem = payload.item ?? payload.items;
       const items: string[] = Array.isArray(rawItem)
         ? rawItem.filter((i): i is string => typeof i === "string" && i.length > 0)
@@ -840,7 +925,6 @@ function mapAiActionToProposedAction(
           ? [rawItem]
           : [];
       if (items.length === 0) return null;
-      const listName = typeof payload.listName === "string" ? payload.listName : undefined;
       const listPayload: ListRequest = { items, listName };
       const listDisplayName = listName ?? "קניות";
       return {
