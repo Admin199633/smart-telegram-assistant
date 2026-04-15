@@ -1,168 +1,93 @@
-# Smart Telegram Assistant - MVP Specification
+# MVP - Smart Telegram AI Assistant (v2)
 
-## 🎯 Product Definition
+## Product Definition
+A Telegram-based AI assistant that enables:
+- Free-form conversation in Hebrew
+- Basic text understanding (summaries, explanations, writing help)
+- Execution of personal actions (reminders, lists, calendar)
 
-A personal Telegram-based assistant for managing: - Calendar events -
-Shopping and task lists - Reminders
+Core principle:
+**Conversation is primary. Actions are secondary.**
 
-The assistant acts as a single control layer for daily personal
-management using natural language in Hebrew.
+## Target User
+- Single user (MVP)
+- Heavy Telegram user
+- Needs a single place to think, ask, and manage tasks
 
-------------------------------------------------------------------------
+## Core Capabilities
 
-## 👤 Target User
+### AI Conversation (Primary)
+- Answer general questions
+- Explain simple concepts
+- Summarize text
+- Assist with writing
 
--   Single user (personal use)
--   Heavy Telegram user
--   Currently manages tasks across notes, calendar, and other apps
+Requirements:
+- Natural Hebrew responses
+- Clear and concise
+- No hallucinated actions
 
-------------------------------------------------------------------------
+### Conversation Behavior
+Default:
+User → AI Response
 
-## 🧠 Core Capabilities
+No forced commands or rigid flows.
 
-### 1. Calendar Management
+### Action Suggestion (Secondary)
+Triggered only on explicit user request.
 
-Supported actions: - Create event - Update event - Delete event - View
-events (e.g., "what do I have today")
+Supported:
+- Reminders
+- Lists
+- Calendar events
 
-Input handling: - Exact time ("tomorrow at 17:00") - Fuzzy time
-("tomorrow evening" → mapped automatically)
+Flow:
+User → Detect → Suggest → Confirm
 
-Behavior: - Default: no participants - Optional: allow adding
-participants - If multiple matching events → show options to user
+### Confirmation System
+All actions require explicit confirmation.
 
-------------------------------------------------------------------------
+### Action Execution
+Reminders:
+- Create
+- Store datetime
+- Trigger message
 
-### 2. Shopping & Task Lists
+Lists:
+- Create
+- Add items
+- View items
+- Mark completed
 
-Supported actions: - Add item(s) to list (multiple in one command) -
-View list - Mark item as completed - View completed items - Remove items
+Calendar:
+- Create / view / update / delete
 
-List behavior: - Multiple lists supported - If list does not exist → ask
-user and suggest up to 3 recent lists - If no list specified → system
-infers intent (shopping vs tasks)
+## UX Principles
+- Conversation-first
+- Clear separation between chat and actions
+- Minimal friction
+- Safe system behavior
 
-List structure: - Active items (not completed) - Completed items
-(viewable separately)
+## System Architecture
+Telegram → Webhook → Orchestrator → LLM → Response → (Optional Action) → Confirmation → Execution
 
-------------------------------------------------------------------------
+## Data Model
+User, Reminder, List, ListItem, PendingAction
 
-### 3. Reminders
+## Constraints
+- Single user
+- No long-term AI memory
+- No autonomous actions
+- Minimal infrastructure
 
-Supported actions: - Create reminder - View reminders
+## Definition of Done
+- Conversation works
+- Actions work
+- Confirmation required
+- Stable system
 
-Input handling: - Exact time - Relative time ("in one hour") - Fuzzy
-time ("tomorrow morning/evening")
-
-Behavior: - One-time reminders only (MVP) - Fuzzy times auto-mapped: -
-Morning → 09:00 - Afternoon → 13:00 - Evening → 19:00
-
-Execution: - Sends Telegram message at trigger time
-
-------------------------------------------------------------------------
-
-## 💬 UX Rules
-
--   Every action requires explicit confirmation
--   If missing information → ask clarification
--   Never guess critical data
--   Responses should be concise and clear
-
-------------------------------------------------------------------------
-
-## 🔄 Core Flows
-
-### Calendar
-
-User → Parse → Clarify (if needed) → Confirm → Execute → Response
-
-### Lists
-
-User → Parse → Infer list → Confirm → Store → Response
-
-### Reminders
-
-User → Parse → Normalize time → Confirm → Store → Trigger → Notify
-
-------------------------------------------------------------------------
-
-## 🧱 System Architecture (High Level)
-
--   Telegram Webhook (entry point)
--   Orchestrator (flow manager)
--   LLM Service (intent parsing)
--   Calendar Service (Google Calendar)
--   List Service (new)
--   Reminder Service (new)
--   Persistence Layer (DB required)
-
-------------------------------------------------------------------------
-
-## 🧱 Data Requirements
-
-### User
-
--   id
--   telegram_id
--   timezone
-
-### Lists
-
--   id
--   user_id
--   name
--   created_at
-
-### List Items
-
--   id
--   list_id
--   text
--   status (active/completed)
--   created_at
-
-### Reminders
-
--   id
--   user_id
--   text
--   datetime
--   status
--   created_at
-
-### Calendar Tokens
-
--   user_id
--   access_token
--   refresh_token
-
-------------------------------------------------------------------------
-
-## ⚠️ Constraints
-
--   Single-user system (no multi-user complexity)
--   No SaaS features
--   Minimal infrastructure
--   Focus on reliability over features
-
-------------------------------------------------------------------------
-
-## ✅ Definition of Done (MVP)
-
--   User can create/update/delete calendar events
--   User can manage lists (add/view/complete)
--   User can create reminders with natural language
--   Reminders trigger correctly via Telegram
--   System handles fuzzy time
--   All actions require confirmation
--   Data persists (no memory-only)
-
-------------------------------------------------------------------------
-
-## 🚀 Future (Not in MVP)
-
--   Recurring reminders
--   Shared lists
--   Multi-user support
--   Admin UI
--   Advanced integrations
+## Non-Goals
+- GPT-level intelligence
+- Multi-user
+- Advanced memory
+- Automation

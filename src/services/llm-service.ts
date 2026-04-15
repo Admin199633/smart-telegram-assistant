@@ -20,6 +20,7 @@ import { config } from "../config.js";
 import { AGENT_INTENT_VALUES, AGENT_INTENTS, PROPOSED_ACTION_TYPES } from "../supported-actions.js";
 import { createId } from "../utils/id.js";
 import { formatDateTime, parseNaturalLanguageDate } from "../utils/time.js";
+import { createSmartChatCompletion } from "./smart-chat.js";
 import {
   normalizeInput,
   matchesAny,
@@ -59,7 +60,7 @@ export class LlmService {
           return composed;
         }
       }
-      return this.heuristicInterpretation(normalized, profile);
+      return this.heuristicWithSmartFallback(normalized, text, profile);
     }
 
     if (config.openAiApiKey) {
@@ -69,7 +70,27 @@ export class LlmService {
       }
     }
 
-    return this.heuristicInterpretation(normalized, profile);
+    return this.heuristicWithSmartFallback(normalized, text, profile);
+  }
+
+  private async heuristicWithSmartFallback(normalized: string, originalText: string, profile: UserProfile): Promise<AgentInterpretation> {
+    const result = this.heuristicInterpretation(normalized, profile);
+    if (result.intent === AGENT_INTENTS.OUT_OF_SCOPE) {
+      try {
+        const reply = await createSmartChatCompletion(originalText);
+        if (reply) {
+          return {
+            intent: AGENT_INTENTS.OUT_OF_SCOPE,
+            entities: {},
+            draftResponse: reply,
+            proposedAction: undefined
+          };
+        }
+      } catch {
+        // fall through to heuristic result
+      }
+    }
+    return result;
   }
 
   private heuristicInterpretation(text: string, profile: UserProfile): AgentInterpretation {
@@ -546,7 +567,7 @@ export class LlmService {
       }
 
       const parsed = JSON.parse(data.output_text) as AgentInterpretation;
-      if (parsed.proposedAction && !parsed.proposedAction.id) {
+      if (parsed.proposedAction) {
         parsed.proposedAction.id = createId("action");
       }
       return parsed;

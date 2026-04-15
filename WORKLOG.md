@@ -1,5 +1,35 @@
 # Worklog
 
+## 2026-04-14 - Fix BUTTON_DATA_INVALID
+
+**Root cause:** `tryOpenAiInterpretation` in `llm-service.ts` (line 549) guarded ID assignment with `!parsed.proposedAction.id`. The OpenAI response schema uses `additionalProperties: true`, so the LLM can include an `id` field with arbitrary content — Hebrew text, long strings, or anything else. That value flowed directly into `confirm:${proposedAction.id}` in `buildTelegramMarkup`, which Telegram rejects with `BUTTON_DATA_INVALID` whenever the id is non-ASCII or the combined string exceeds 64 bytes.
+
+The heuristic path and the compose path both call `createId(prefix)` directly and were unaffected.
+
+**Fix:** Dropped the `!parsed.proposedAction.id` guard so the action ID is *always* overwritten with a controlled `createId("action")` value, regardless of what the LLM returned.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/services/llm-service.ts` | Line 549: removed `!parsed.proposedAction.id &&` condition — ID now always set by the bot |
+
+---
+
+## 2026-04-14 - answerCallbackQuery exactly once
+
+**Root cause:** `answerCallbackQuery` was already called early (before business logic) for every `callback_query`, satisfying the at-most-once requirement. However, the `await` was unguarded — if the Telegram API returned an error, the thrown exception propagated to the outer `catch`, returning HTTP 500 and causing Telegram to retry the webhook. The early-answer intent was undermined: the spinner still hung and the handler never ran.
+
+**Fix:** Added `.catch(() => undefined)` to the `answerCallbackQuery` call so a transient API error never propagates, the webhook always returns 200, and the business-logic branches always execute.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/app.ts` | Line 214: `answerCallbackQuery(...).catch(() => undefined)` |
+
+---
+
 ## 2026-04-14 - Expand DELETE_LIST language coverage and clarification
 
 **Root cause / gap:** `DELETE_LIST_TRIGGERS` required "רשימת X" — missing three cases: (1) delete intent with no list name ("מחק רשימה"), (2) bare-name delete without the word "רשימה" ("תמחק את קניות"), and (3) missing-name responses returned `OUT_OF_SCOPE` instead of asking for clarification. Additionally, `resumeClarification` had no `DELETE_LIST` handler so clarification answers were silently dropped.

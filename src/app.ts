@@ -179,7 +179,7 @@ export function createApp() {
         "אפשרויות", "אופציות", "תפריט", "תפריט ראשי", "פתח תפריט",
         "תפתח תפריט", "תציג אפשרויות", "תראה אפשרויות",
         "מה אפשר לעשות", "מה אתה יודע לעשות",
-        "עזרה", "help", "menu", "options"
+        "עזרה", "help", "menu", "options", "/start"
       ]);
 
       if (incomingText && MENU_TRIGGERS.has(incomingText.trim()) && chatId) {
@@ -209,9 +209,10 @@ export function createApp() {
       const callbackData = callbackQuery?.data;
 
       // Answer every callback immediately — before any async work — to avoid the
-      // Telegram 10-second timeout ("query is too old").
+      // Telegram 10-second timeout ("query is too old"). Use .catch so a transient
+      // Telegram API error does not propagate and cancel the rest of the handler.
       if (callbackQuery) {
-        await telegram.answerCallbackQuery(callbackQuery.id);
+        await telegram.answerCallbackQuery(callbackQuery.id).catch(() => undefined);
       }
 
       if (callbackData?.startsWith("confirm:") && chatId && callbackQuery) {
